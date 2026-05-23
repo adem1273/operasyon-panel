@@ -43,6 +43,10 @@ Enterprise AI-powered multi-tenant SaaS platform for VIP transportation operatio
 
    npm run smoke:triage
 
+10. Run API integration checks (API must be running):
+
+   npm run test:integration:api
+
 ## Demo Authentication Flow
 
 1. Login with tenant header:
@@ -128,6 +132,7 @@ Enterprise AI-powered multi-tenant SaaS platform for VIP transportation operatio
    - event severity badges and date-range filtered realtime export
    - persistent event archive API with date-range filter and CSV/JSON export
    - alarm triage workflow (acknowledge, snooze, assign, resolve) with priority queue ordering
+   - event archive cursor pagination and operations metrics endpoint
 
 ## Realtime WebSocket
 

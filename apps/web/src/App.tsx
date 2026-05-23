@@ -6,6 +6,7 @@ import {
   EventArchiveResponse,
   EventArchiveRow,
   EventTriageResponse,
+  OperationsMetricsResponse,
   DeliveryResponse,
   DeliveryRow
 } from "./types";
@@ -107,6 +108,7 @@ export function App(): React.JSX.Element {
   const [deliveries, setDeliveries] = useState<DeliveryResponse | null>(null);
   const [deadLetters, setDeadLetters] = useState<DeliveryResponse | null>(null);
   const [eventArchive, setEventArchive] = useState<EventArchiveResponse | null>(null);
+  const [operationsMetrics, setOperationsMetrics] = useState<OperationsMetricsResponse | null>(null);
   const [eventTriageResult, setEventTriageResult] = useState<EventTriageResponse | null>(null);
   const [retryResult, setRetryResult] = useState<DeadLetterRetryResponse | null>(null);
   const [status, setStatus] = useState<LoadState>("idle");
@@ -140,7 +142,11 @@ export function App(): React.JSX.Element {
   const [archiveReservationFilter, setArchiveReservationFilter] = useState<string>("");
   const [archiveFrom, setArchiveFrom] = useState<string>("");
   const [archiveTo, setArchiveTo] = useState<string>("");
+  const [archiveCursorId, setArchiveCursorId] = useState<string>("");
+  const [archiveHasMore, setArchiveHasMore] = useState<boolean>(false);
+  const [onlyOpenQuickFilter, setOnlyOpenQuickFilter] = useState<boolean>(false);
   const [selectedArchiveEventIds, setSelectedArchiveEventIds] = useState<string[]>([]);
+  const [triageInFlightIds, setTriageInFlightIds] = useState<string[]>([]);
   const [triageAction, setTriageAction] = useState<TriageAction>("acknowledge");
   const [triageAssignedUserId, setTriageAssignedUserId] = useState<string>("");
   const [triageSnoozedUntil, setTriageSnoozedUntil] = useState<string>("");
@@ -334,7 +340,7 @@ export function App(): React.JSX.Element {
     }
   }
 
-  async function loadDashboard(options?: { silent?: boolean }): Promise<void> {
+  async function loadDashboard(options?: { silent?: boolean; appendArchive?: boolean }): Promise<void> {
     if (!canFetch) {
       setMessage("Tenant, user ve access token alanları zorunlu.");
       return;
@@ -346,7 +352,7 @@ export function App(): React.JSX.Element {
     }
 
     try {
-      const [dashboardData, deliveryData, deadLetterData, archiveData] = await Promise.all([
+      const [dashboardData, deliveryData, deadLetterData, archiveData, metricsData] = await Promise.all([
         fetchJson<DashboardResponse>("/operations/live-dashboard"),
         fetchJson<DeliveryResponse>(
           `/operations/notification-deliveries?limit=${limit}&offset=0${
@@ -358,16 +364,28 @@ export function App(): React.JSX.Element {
             errorCategory ? `&errorCategory=${encodeURIComponent(errorCategory)}` : ""
           }`
         ),
-        fetchJson<EventArchiveResponse>(buildEventArchiveQuery())
+        fetchJson<EventArchiveResponse>(buildEventArchiveQuery(options?.appendArchive === true)),
+        fetchJson<OperationsMetricsResponse>("/operations/metrics")
       ]);
 
-      const archiveIds = new Set(archiveData.items.map((item) => item.id));
+      const nextArchiveItems = options?.appendArchive
+        ? [...(eventArchive?.items ?? []), ...archiveData.items]
+        : archiveData.items;
+
+      const archiveIds = new Set(nextArchiveItems.map((item) => item.id));
       setSelectedArchiveEventIds((prev) => prev.filter((id) => archiveIds.has(id)));
 
       setDashboard(dashboardData);
       setDeliveries(deliveryData);
       setDeadLetters(deadLetterData);
-      setEventArchive(archiveData);
+      setEventArchive({
+        items: nextArchiveItems,
+        total: archiveData.total,
+        nextCursorId: archiveData.nextCursorId
+      });
+      setOperationsMetrics(metricsData);
+      setArchiveHasMore(Boolean(archiveData.nextCursorId));
+      setArchiveCursorId(archiveData.nextCursorId ?? "");
       setStatus("success");
       if (!options?.silent) {
         setMessage("Veriler başarıyla güncellendi.");
@@ -568,17 +586,23 @@ export function App(): React.JSX.Element {
     }
   }
 
-  function buildEventArchiveQuery(): string {
+  function buildEventArchiveQuery(includeCursor: boolean = true): string {
     const params = new URLSearchParams({
       limit: String(limit),
       offset: "0"
     });
 
+    if (includeCursor && archiveCursorId) {
+      params.set("cursorId", archiveCursorId);
+    }
+
     if (archiveSeverity !== "ALL") {
       params.set("severity", archiveSeverity);
     }
 
-    if (archiveTriageStatus !== "ALL") {
+    if (onlyOpenQuickFilter) {
+      params.set("triageStatus", "OPEN");
+    } else if (archiveTriageStatus !== "ALL") {
       params.set("triageStatus", archiveTriageStatus);
     }
 
@@ -602,8 +626,21 @@ export function App(): React.JSX.Element {
   }
 
   function buildEventArchiveExportPath(format: "csv" | "json"): string {
-    const query = buildEventArchiveQuery().replace("/operations/event-archive?", "");
+    const query = buildEventArchiveQuery(false).replace("/operations/event-archive?", "");
     return `/operations/event-archive/export?format=${format}&${query}`;
+  }
+
+  function resetArchivePagination(): void {
+    setArchiveCursorId("");
+    setArchiveHasMore(false);
+  }
+
+  async function loadMoreArchive(): Promise<void> {
+    if (!archiveHasMore || !archiveCursorId) {
+      return;
+    }
+
+    await loadDashboard({ silent: true, appendArchive: true });
   }
 
   async function handleEventArchiveExport(format: "csv" | "json"): Promise<void> {
@@ -656,16 +693,74 @@ export function App(): React.JSX.Element {
     setSelectedArchiveEventIds(Array.from(new Set([...selectedArchiveEventIds, ...ids])));
   }
 
-  async function runEventTriage(): Promise<void> {
+  function applyOptimisticTriage(
+    items: EventArchiveRow[],
+    ids: string[],
+    action: TriageAction,
+    input: { assignedUserId?: string; snoozedUntil?: string }
+  ): EventArchiveRow[] {
+    const nowIso = new Date().toISOString();
+    return items.map((item) => {
+      if (!ids.includes(item.id)) {
+        return item;
+      }
+
+      if (action === "acknowledge") {
+        return {
+          ...item,
+          triageStatus: "ACKNOWLEDGED",
+          acknowledgedAt: nowIso,
+          acknowledgedByUserId: credentials.userId,
+          snoozedUntil: undefined
+        };
+      }
+
+      if (action === "resolve") {
+        return {
+          ...item,
+          triageStatus: "RESOLVED",
+          acknowledgedAt: nowIso,
+          acknowledgedByUserId: credentials.userId,
+          snoozedUntil: undefined
+        };
+      }
+
+      if (action === "assign") {
+        return {
+          ...item,
+          triageStatus: "ACKNOWLEDGED",
+          assignedUserId: input.assignedUserId,
+          acknowledgedAt: nowIso,
+          acknowledgedByUserId: credentials.userId,
+          snoozedUntil: undefined
+        };
+      }
+
+      return {
+        ...item,
+        triageStatus: "SNOOZED",
+        snoozedUntil: input.snoozedUntil,
+        acknowledgedAt: nowIso,
+        acknowledgedByUserId: credentials.userId
+      };
+    });
+  }
+
+  async function runEventTriage(eventIdsOverride?: string[], actionOverride?: TriageAction): Promise<void> {
     if (!canFetch) {
       setMessage("Önce kimlik alanlarını doldur.");
       return;
     }
 
-    if (selectedArchiveEventIds.length === 0) {
+    const targetIds = eventIdsOverride ?? selectedArchiveEventIds;
+    const targetAction = actionOverride ?? triageAction;
+
+    if (targetIds.length === 0) {
       setMessage("Triage icin en az bir archive event sec.");
       return;
     }
+
+    const previousArchive = eventArchive;
 
     try {
       const payload: {
@@ -674,16 +769,27 @@ export function App(): React.JSX.Element {
         snoozedUntil?: string;
         assignedUserId?: string;
       } = {
-        eventIds: selectedArchiveEventIds,
-        action: triageAction
+        eventIds: targetIds,
+        action: targetAction
       };
 
-      if (triageAction === "assign") {
+      if (targetAction === "assign") {
         payload.assignedUserId = triageAssignedUserId.trim() || undefined;
       }
 
-      if (triageAction === "snooze") {
+      if (targetAction === "snooze") {
         payload.snoozedUntil = triageSnoozedUntil || undefined;
+      }
+
+      setTriageInFlightIds(targetIds);
+      if (eventArchive) {
+        setEventArchive({
+          ...eventArchive,
+          items: applyOptimisticTriage(eventArchive.items, targetIds, targetAction, {
+            assignedUserId: payload.assignedUserId,
+            snoozedUntil: payload.snoozedUntil
+          })
+        });
       }
 
       const result = await fetchJson<EventTriageResponse>("/operations/event-archive/triage", {
@@ -693,8 +799,13 @@ export function App(): React.JSX.Element {
 
       setEventTriageResult(result);
       setMessage(`Triage: ${result.action} tamamlandi. Guncellenen kayit: ${result.updated}`);
+      setTriageInFlightIds([]);
       await loadDashboard({ silent: true });
     } catch (error) {
+      if (previousArchive) {
+        setEventArchive(previousArchive);
+      }
+      setTriageInFlightIds([]);
       setMessage(error instanceof Error ? error.message : "Event triage hatası");
     }
   }
@@ -723,6 +834,7 @@ export function App(): React.JSX.Element {
           : `Retry tamamlandı. Kuyruğa alınan: ${result.enqueued}`
       );
 
+      resetArchivePagination();
       await loadDashboard();
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "Retry hatası");
@@ -731,6 +843,7 @@ export function App(): React.JSX.Element {
 
   function onCredentialsSubmit(event: FormEvent<HTMLFormElement>): void {
     event.preventDefault();
+    resetArchivePagination();
     void loadDashboard();
   }
 
@@ -856,7 +969,10 @@ export function App(): React.JSX.Element {
                 min={5}
                 max={100}
                 value={limit}
-                onChange={(event) => setLimit(Number(event.target.value))}
+                onChange={(event) => {
+                  setLimit(Number(event.target.value));
+                  resetArchivePagination();
+                }}
               />
             </label>
             <label>
@@ -876,7 +992,13 @@ export function App(): React.JSX.Element {
           <div className="archive-filter-row">
             <label>
               Archive Severity
-              <select value={archiveSeverity} onChange={(event) => setArchiveSeverity(event.target.value as ArchiveSeverityFilter)}>
+              <select
+                value={archiveSeverity}
+                onChange={(event) => {
+                  setArchiveSeverity(event.target.value as ArchiveSeverityFilter);
+                  resetArchivePagination();
+                }}
+              >
                 <option value="ALL">ALL</option>
                 <option value="HIGH">HIGH</option>
                 <option value="MEDIUM">MEDIUM</option>
@@ -887,7 +1009,10 @@ export function App(): React.JSX.Element {
               Archive Triage
               <select
                 value={archiveTriageStatus}
-                onChange={(event) => setArchiveTriageStatus(event.target.value as ArchiveTriageFilter)}
+                onChange={(event) => {
+                  setArchiveTriageStatus(event.target.value as ArchiveTriageFilter);
+                  resetArchivePagination();
+                }}
               >
                 <option value="ALL">ALL</option>
                 <option value="OPEN">OPEN</option>
@@ -900,7 +1025,10 @@ export function App(): React.JSX.Element {
               Archive Event Type
               <select
                 value={archiveEventType}
-                onChange={(event) => setArchiveEventType(event.target.value as ArchiveEventTypeFilter)}
+                onChange={(event) => {
+                  setArchiveEventType(event.target.value as ArchiveEventTypeFilter);
+                  resetArchivePagination();
+                }}
               >
                 <option value="ALL">ALL</option>
                 <option value="RESERVATION_CREATED">RESERVATION_CREATED</option>
@@ -911,17 +1039,34 @@ export function App(): React.JSX.Element {
               Archive Reservation ID
               <input
                 value={archiveReservationFilter}
-                onChange={(event) => setArchiveReservationFilter(event.target.value)}
+                onChange={(event) => {
+                  setArchiveReservationFilter(event.target.value);
+                  resetArchivePagination();
+                }}
                 placeholder="Reservation UUID"
               />
             </label>
             <label>
               Archive From
-              <input type="datetime-local" value={archiveFrom} onChange={(event) => setArchiveFrom(event.target.value)} />
+              <input
+                type="datetime-local"
+                value={archiveFrom}
+                onChange={(event) => {
+                  setArchiveFrom(event.target.value);
+                  resetArchivePagination();
+                }}
+              />
             </label>
             <label>
               Archive To
-              <input type="datetime-local" value={archiveTo} onChange={(event) => setArchiveTo(event.target.value)} />
+              <input
+                type="datetime-local"
+                value={archiveTo}
+                onChange={(event) => {
+                  setArchiveTo(event.target.value);
+                  resetArchivePagination();
+                }}
+              />
             </label>
           </div>
 
@@ -1143,6 +1288,18 @@ export function App(): React.JSX.Element {
         <article className="panel table-panel">
           <h3>Event Archive Priority Queue</h3>
 
+          <label className="toggle muted quick-toggle">
+            <input
+              type="checkbox"
+              checked={onlyOpenQuickFilter}
+              onChange={(event) => {
+                setOnlyOpenQuickFilter(event.target.checked);
+                resetArchivePagination();
+              }}
+            />
+            <span>Quick filter: sadece OPEN eventler</span>
+          </label>
+
           <div className="triage-controls">
             <button type="button" className="btn" onClick={toggleSelectAllArchiveRows}>
               {priorityQueue.length > 0 && priorityQueue.every((row) => selectedArchiveEventIds.includes(row.id))
@@ -1193,6 +1350,7 @@ export function App(): React.JSX.Element {
                 <th>Reservation</th>
                 <th>Assigned</th>
                 <th>Event At</th>
+                <th>Action</th>
               </tr>
             </thead>
             <tbody>
@@ -1202,6 +1360,7 @@ export function App(): React.JSX.Element {
                     <input
                       type="checkbox"
                       checked={selectedArchiveEventIds.includes(row.id)}
+                      disabled={triageInFlightIds.includes(row.id)}
                       onChange={() => toggleArchiveSelection(row.id)}
                     />
                   </td>
@@ -1218,18 +1377,61 @@ export function App(): React.JSX.Element {
                   <td>{row.reservationId ? row.reservationId.slice(0, 8) : "-"}</td>
                   <td>{row.assignedUserId ? row.assignedUserId.slice(0, 8) : "-"}</td>
                   <td>{toLocalDate(row.eventAt)}</td>
+                  <td>
+                    <div className="inline-actions">
+                      <button
+                        type="button"
+                        className="btn btn-inline"
+                        disabled={triageInFlightIds.includes(row.id)}
+                        onClick={() => void runEventTriage([row.id], "acknowledge")}
+                      >
+                        Ack
+                      </button>
+                      <button
+                        type="button"
+                        className="btn btn-inline"
+                        disabled={triageInFlightIds.includes(row.id)}
+                        onClick={() => void runEventTriage([row.id], "resolve")}
+                      >
+                        Resolve
+                      </button>
+                    </div>
+                  </td>
                 </tr>
               ))}
             </tbody>
           </table>
 
+          <div className="archive-pagination">
+            <button type="button" className="btn" disabled={!archiveHasMore} onClick={() => void loadMoreArchive()}>
+              {archiveHasMore ? "Daha Fazla Yukle" : "Tum Kayitlar Yuklendi"}
+            </button>
+          </div>
+
           <div className="retry-summary">
             <h4>Archive / Triage Ozet</h4>
             <p>Total Archive Rows: {eventArchive?.total ?? "-"}</p>
             <p>Queue Rows (filtered): {priorityQueue.length}</p>
+            <p>Next Cursor: {eventArchive?.nextCursorId ? eventArchive.nextCursorId.slice(0, 8) : "-"}</p>
             <p>Triage Action: {eventTriageResult?.action ?? "-"}</p>
             <p>Matched: {eventTriageResult?.matched ?? "-"}</p>
             <p>Updated: {eventTriageResult?.updated ?? "-"}</p>
+          </div>
+
+          <div className="retry-summary">
+            <h4>Operational Metrics</h4>
+            <p>Generated: {operationsMetrics ? toLocalDate(operationsMetrics.generatedAt) : "-"}</p>
+            <p>Archive Query Count: {operationsMetrics?.eventArchiveQueryCount ?? "-"}</p>
+            <p>Archive Query Latency Avg: {operationsMetrics?.eventArchiveQueryLatencyMsAvg ?? "-"} ms</p>
+            <p>Triage Action Count: {operationsMetrics?.triageActionCount ?? "-"}</p>
+            <p>Triage Latency Avg: {operationsMetrics?.triageActionLatencyMsAvg ?? "-"} ms</p>
+            <p>Triage Failure Count: {operationsMetrics?.triageFailureCount ?? "-"}</p>
+            <p>
+              Triage Breakdown: ack {operationsMetrics?.triageActionBreakdown.acknowledge ?? "-"}, snooze{" "}
+              {operationsMetrics?.triageActionBreakdown.snooze ?? "-"}, assign{" "}
+              {operationsMetrics?.triageActionBreakdown.assign ?? "-"}, resolve{" "}
+              {operationsMetrics?.triageActionBreakdown.resolve ?? "-"}
+            </p>
           </div>
         </article>
       </section>

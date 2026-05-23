@@ -521,6 +521,26 @@ th {
   font-size: 0.78rem;
 }
 
+.quick-toggle {
+  margin: 0 0 0.65rem;
+}
+
+.inline-actions {
+  display: flex;
+  gap: 0.35rem;
+}
+
+.btn-inline {
+  padding: 0.3rem 0.5rem;
+  font-size: 0.72rem;
+}
+
+.archive-pagination {
+  margin-top: 0.7rem;
+  display: flex;
+  justify-content: flex-end;
+}
+
 .retry-summary {
   margin-top: 0.9rem;
   border-top: 1px solid rgba(167, 198, 193, 0.16);

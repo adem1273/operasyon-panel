@@ -93,6 +93,9 @@ jobs:
       - name: Run smoke triage flow
         run: npm run smoke:triage
 
+      - name: Run API integration checks
+        run: npm run test:integration:api
+
       - name: Dump API log on failure
         if: failure()
         run: tail -n 300 /tmp/api.log || true

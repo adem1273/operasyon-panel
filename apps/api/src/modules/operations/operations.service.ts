@@ -70,6 +70,7 @@ type DeadLetterRetryResult = {
 type EventArchiveQueryInput = {
   limit: number;
   offset: number;
+  cursorId?: string;
   eventType?: string;
   severity?: string;
   triageStatus?: string;
@@ -96,7 +97,8 @@ type EventArchiveRow = {
 
 type EventArchiveQueryResult = {
   items: EventArchiveRow[];
-  total: number;
+  total?: number;
+  nextCursorId?: string;
 };
 
 type EventArchiveExportResult = {
@@ -120,8 +122,37 @@ type EventTriageResult = {
   updated: number;
 };
 
+type OperationsMetricsSnapshot = {
+  generatedAt: string;
+  eventArchiveQueryCount: number;
+  eventArchiveQueryLatencyMsAvg: number;
+  triageActionCount: number;
+  triageActionLatencyMsAvg: number;
+  triageFailureCount: number;
+  triageActionBreakdown: {
+    acknowledge: number;
+    snooze: number;
+    assign: number;
+    resolve: number;
+  };
+};
+
 @Injectable()
 export class OperationsService {
+  private readonly metrics = {
+    eventArchiveQueryCount: 0,
+    eventArchiveQueryLatencyMsTotal: 0,
+    triageActionCount: 0,
+    triageActionLatencyMsTotal: 0,
+    triageFailureCount: 0,
+    triageActionBreakdown: {
+      acknowledge: 0,
+      snooze: 0,
+      assign: 0,
+      resolve: 0
+    }
+  };
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly queueService: QueueService
@@ -411,9 +442,10 @@ export class OperationsService {
       throw new UnauthorizedException("Missing tenant context");
     }
 
+    const startedAt = Date.now();
     const safeLimit = Math.max(1, Math.min(input.limit, 200));
     const safeOffset = Math.max(0, input.offset);
-    const where = this.buildEventArchiveWhere({
+    const baseWhere = this.buildEventArchiveWhere({
       tenantId,
       eventType: input.eventType,
       severity: input.severity,
@@ -424,19 +456,25 @@ export class OperationsService {
       to: input.to
     });
 
-    const [total, rows] = await Promise.all([
-      this.prisma.operationalEvent.count({ where }),
-      this.prisma.operationalEvent.findMany({
-        where,
-        orderBy: [{ triageStatus: "asc" }, { severity: "desc" }, { eventAt: "desc" }],
-        take: safeLimit,
-        skip: safeOffset
-      })
-    ]);
+    const where = await this.withCursorWhere(tenantId, baseWhere, input.cursorId);
+
+    const rows = await this.prisma.operationalEvent.findMany({
+      where,
+      orderBy: [{ eventAt: "desc" }, { id: "desc" }],
+      take: safeLimit + 1,
+      skip: input.cursorId ? 0 : safeOffset
+    });
+
+    const hasMore = rows.length > safeLimit;
+    const pagedRows = hasMore ? rows.slice(0, safeLimit) : rows;
+    const total = input.cursorId ? undefined : await this.prisma.operationalEvent.count({ where: baseWhere });
+
+    this.observeEventArchiveQuery(Date.now() - startedAt);
 
     return {
       total,
-      items: rows.map((row) => this.mapEventArchiveRow(row))
+      nextCursorId: hasMore ? pagedRows[pagedRows.length - 1]?.id : undefined,
+      items: pagedRows.map((row) => this.mapEventArchiveRow(row))
     };
   }
 
@@ -514,13 +552,19 @@ export class OperationsService {
     }
 
     const action = input.action;
+    const startedAt = Date.now();
     const rows = await this.prisma.operationalEvent.findMany({
       where: {
         tenantId,
         id: { in: uniqueEventIds }
       },
       select: {
-        id: true
+        id: true,
+        triageStatus: true,
+        assignedUserId: true,
+        snoozedUntil: true,
+        acknowledgedByUserId: true,
+        acknowledgedAt: true
       }
     });
 
@@ -544,12 +588,65 @@ export class OperationsService {
       })
     );
 
-    const updated = await this.prisma.$transaction(updates);
+    const triageAuditAction = `OP_EVENT_TRIAGE_${action.toUpperCase()}`;
+    const newValue = this.buildTriageAuditNewValue(action, input, userId);
+    const auditLogs = rows.map((row) =>
+      this.prisma.auditLog.create({
+        data: {
+          tenantId,
+          userId,
+          actionType: triageAuditAction,
+          moduleName: "OperationsModule",
+          entityType: "OperationalEvent",
+          entityId: row.id,
+          oldValue: {
+            triageStatus: row.triageStatus,
+            assignedUserId: row.assignedUserId,
+            snoozedUntil: row.snoozedUntil?.toISOString() ?? null,
+            acknowledgedByUserId: row.acknowledgedByUserId,
+            acknowledgedAt: row.acknowledgedAt?.toISOString() ?? null
+          },
+          newValue
+        }
+      })
+    );
+
+    let updated;
+    try {
+      updated = await this.prisma.$transaction([...updates, ...auditLogs]);
+      this.observeTriageAction(action, Date.now() - startedAt, false);
+    } catch (error) {
+      this.observeTriageAction(action, Date.now() - startedAt, true);
+      throw error;
+    }
 
     return {
       action,
       matched,
-      updated: updated.length
+      updated: updated.length - auditLogs.length
+    };
+  }
+
+  getMetrics(): OperationsMetricsSnapshot {
+    return {
+      generatedAt: new Date().toISOString(),
+      eventArchiveQueryCount: this.metrics.eventArchiveQueryCount,
+      eventArchiveQueryLatencyMsAvg: this.average(
+        this.metrics.eventArchiveQueryLatencyMsTotal,
+        this.metrics.eventArchiveQueryCount
+      ),
+      triageActionCount: this.metrics.triageActionCount,
+      triageActionLatencyMsAvg: this.average(
+        this.metrics.triageActionLatencyMsTotal,
+        this.metrics.triageActionCount
+      ),
+      triageFailureCount: this.metrics.triageFailureCount,
+      triageActionBreakdown: {
+        acknowledge: this.metrics.triageActionBreakdown.acknowledge,
+        snooze: this.metrics.triageActionBreakdown.snooze,
+        assign: this.metrics.triageActionBreakdown.assign,
+        resolve: this.metrics.triageActionBreakdown.resolve
+      }
     };
   }
 
@@ -839,6 +936,88 @@ export class OperationsService {
     }
 
     throw new BadRequestException("Invalid triage action");
+  }
+
+  private buildTriageAuditNewValue(
+    action: EventTriageAction,
+    input: EventTriageInput,
+    userId: string
+  ): Prisma.InputJsonValue {
+    const base: Record<string, unknown> = {
+      action,
+      changedByUserId: userId,
+      changedAt: new Date().toISOString()
+    };
+
+    if (action === "assign") {
+      base.assignedUserId = input.assignedUserId ?? null;
+    }
+
+    if (action === "snooze") {
+      base.snoozedUntil = input.snoozedUntil ?? null;
+    }
+
+    return base as Prisma.InputJsonValue;
+  }
+
+  private async withCursorWhere(
+    tenantId: string,
+    where: Prisma.OperationalEventWhereInput,
+    cursorId?: string
+  ): Promise<Prisma.OperationalEventWhereInput> {
+    if (!cursorId) {
+      return where;
+    }
+
+    const cursorRow = await this.prisma.operationalEvent.findFirst({
+      where: {
+        tenantId,
+        id: cursorId
+      },
+      select: {
+        id: true,
+        eventAt: true
+      }
+    });
+
+    if (!cursorRow) {
+      return where;
+    }
+
+    return {
+      AND: [
+        where,
+        {
+          OR: [
+            { eventAt: { lt: cursorRow.eventAt } },
+            { eventAt: cursorRow.eventAt, id: { lt: cursorRow.id } }
+          ]
+        }
+      ]
+    };
+  }
+
+  private observeEventArchiveQuery(durationMs: number): void {
+    this.metrics.eventArchiveQueryCount += 1;
+    this.metrics.eventArchiveQueryLatencyMsTotal += durationMs;
+  }
+
+  private observeTriageAction(action: EventTriageAction, durationMs: number, failed: boolean): void {
+    this.metrics.triageActionCount += 1;
+    this.metrics.triageActionLatencyMsTotal += durationMs;
+    this.metrics.triageActionBreakdown[action] += 1;
+
+    if (failed) {
+      this.metrics.triageFailureCount += 1;
+    }
+  }
+
+  private average(total: number, count: number): number {
+    if (count === 0) {
+      return 0;
+    }
+
+    return Number((total / count).toFixed(2));
   }
 
   private severityByReservationStatus(status: string): OperationalEventSeverity {

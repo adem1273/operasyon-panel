@@ -63,13 +63,29 @@ type EventArchiveResponse = {
     snoozedUntil?: string;
     assignedUserId?: string;
   }>;
-  total: number;
+  total?: number;
+  nextCursorId?: string;
 };
 
 type EventTriageResponse = {
   action: "acknowledge" | "snooze" | "assign" | "resolve";
   matched: number;
   updated: number;
+};
+
+type OperationsMetricsResponse = {
+  generatedAt: string;
+  eventArchiveQueryCount: number;
+  eventArchiveQueryLatencyMsAvg: number;
+  triageActionCount: number;
+  triageActionLatencyMsAvg: number;
+  triageFailureCount: number;
+  triageActionBreakdown: {
+    acknowledge: number;
+    snooze: number;
+    assign: number;
+    resolve: number;
+  };
 };
 
 @Controller("operations")
@@ -175,6 +191,7 @@ export class OperationsController {
   getEventArchive(
     @Query("limit", new DefaultValuePipe(25), ParseIntPipe) limit: number,
     @Query("offset", new DefaultValuePipe(0), ParseIntPipe) offset: number,
+    @Query("cursorId") cursorId?: string,
     @Query("eventType") eventType?: string,
     @Query("severity") severity?: string,
     @Query("triageStatus") triageStatus?: string,
@@ -186,6 +203,7 @@ export class OperationsController {
     return this.operationsService.getEventArchive({
       limit,
       offset,
+      cursorId,
       eventType,
       severity,
       triageStatus,
@@ -239,5 +257,10 @@ export class OperationsController {
     }
   ): Promise<EventTriageResponse> {
     return this.operationsService.triageEventArchive(body);
+  }
+
+  @Get("metrics")
+  getMetrics(): OperationsMetricsResponse {
+    return this.operationsService.getMetrics();
   }
 }

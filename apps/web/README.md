@@ -36,6 +36,8 @@ Web uygulamasi React + Vite ile calisir bir operasyon paneli olarak baslatildi.
 - Event severity rozetleri (high/medium/low) ve tarih araligiyla filtreli export
 - Event archive paneli: severity/triage/eventType/date filtreleri ve CSV/JSON export
 - Priority queue + bulk triage: acknowledge, snooze, assign, resolve
+- Quick OPEN filter, satir-ici triage aksiyonlari ve optimistic UI guncelleme
+- Operational metrics gorunumu (archive query/triage latency ve action count)
 
 ## Zorunlu Giris Bilgileri
 

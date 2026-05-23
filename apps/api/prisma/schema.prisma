@@ -202,7 +202,9 @@ model OperationalEvent {
   assignedUser       User?                  @relation("OperationalEventAssignedUser", fields: [assignedUserId], references: [id], onDelete: SetNull)
 
   @@index([tenantId, eventAt])
+  @@index([tenantId, eventAt, id])
   @@index([tenantId, severity, triageStatus, eventAt])
+  @@index([tenantId, triageStatus, eventAt, id])
   @@index([tenantId, reservationId, eventAt])
   @@map("operational_events")
 }

@@ -61,11 +61,27 @@ export type EventArchiveRow = {
 
 export type EventArchiveResponse = {
   items: EventArchiveRow[];
-  total: number;
+  total?: number;
+  nextCursorId?: string;
 };
 
 export type EventTriageResponse = {
   action: "acknowledge" | "snooze" | "assign" | "resolve";
   matched: number;
   updated: number;
+};
+
+export type OperationsMetricsResponse = {
+  generatedAt: string;
+  eventArchiveQueryCount: number;
+  eventArchiveQueryLatencyMsAvg: number;
+  triageActionCount: number;
+  triageActionLatencyMsAvg: number;
+  triageFailureCount: number;
+  triageActionBreakdown: {
+    acknowledge: number;
+    snooze: number;
+    assign: number;
+    resolve: number;
+  };
 };

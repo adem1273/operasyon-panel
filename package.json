@@ -12,6 +12,7 @@
     "build:web": "npm --workspace @vipflow/web run build",
     "lint:api": "npm --workspace @vipflow/api run lint",
     "prisma:generate": "npm --workspace @vipflow/api run prisma:generate",
-    "prisma:migrate": "npm --workspace @vipflow/api run prisma:migrate"
+    "prisma:migrate": "npm --workspace @vipflow/api run prisma:migrate",
+    "smoke:triage": "./scripts/smoke-event-archive-triage.sh"
   }
 }

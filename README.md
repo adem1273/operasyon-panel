@@ -39,6 +39,10 @@ Enterprise AI-powered multi-tenant SaaS platform for VIP transportation operatio
 
    npm run dev:web
 
+9. Run event archive + triage smoke test (API must be running):
+
+   npm run smoke:triage
+
 ## Demo Authentication Flow
 
 1. Login with tenant header:

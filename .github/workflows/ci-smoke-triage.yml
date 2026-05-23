@@ -1,0 +1,105 @@
+name: CI Smoke Triage
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  api-web-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_DB: vipflow
+          POSTGRES_USER: vipflow
+          POSTGRES_PASSWORD: vipflow
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd="pg_isready -U vipflow -d vipflow"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=10
+      redis:
+        image: redis:7
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd="redis-cli ping"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=10
+
+    env:
+      NODE_ENV: test
+      DATABASE_URL: postgresql://vipflow:vipflow@localhost:5432/vipflow?schema=public
+      REDIS_URL: redis://localhost:6379
+      JWT_ACCESS_SECRET: change_me_access
+      JWT_REFRESH_SECRET: change_me_refresh
+      SOCKET_IO_REDIS_URL: redis://localhost:6379
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Generate Prisma client
+        run: npm run prisma:generate
+
+      - name: Apply migrations
+        run: npm --workspace @vipflow/api exec prisma migrate deploy
+
+      - name: Seed demo data
+        run: npm --workspace @vipflow/api run prisma:seed
+
+      - name: Typecheck API
+        run: npm run lint:api
+
+      - name: Build web
+        run: npm run build:web
+
+      - name: Start API
+        run: |
+          npm run dev:api > /tmp/api.log 2>&1 &
+          echo $! > /tmp/api.pid
+
+      - name: Wait for API health
+        run: |
+          for i in {1..60}; do
+            if curl -fsS http://localhost:3000/health > /dev/null; then
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "API did not become healthy in time"
+          tail -n 200 /tmp/api.log || true
+          exit 1
+
+      - name: Run smoke triage flow
+        run: npm run smoke:triage
+
+      - name: Dump API log on failure
+        if: failure()
+        run: tail -n 300 /tmp/api.log || true
+
+      - name: Stop API
+        if: always()
+        run: |
+          if [ -f /tmp/api.pid ]; then
+            kill "$(cat /tmp/api.pid)" || true
+          fi

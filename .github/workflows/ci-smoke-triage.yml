@@ -8,6 +8,9 @@ on:
     branches:
       - main
 
+permissions:
+  contents: read
+
 jobs:
   api-web-smoke:
     runs-on: ubuntu-latest
@@ -89,6 +92,31 @@ jobs:
           echo "API did not become healthy in time"
           tail -n 200 /tmp/api.log || true
           exit 1
+
+      - name: Verify public metrics endpoint
+        run: |
+          curl -fsS http://localhost:3000/metrics | grep -q "vipflow_operations_event_archive_queries_total"
+
+      - name: Verify authenticated operations metrics endpoint
+        env:
+          TENANT_ID: a7a82e4a-b5b5-48c2-8daf-a1e6cc953f7b
+          USER_ID: bbaab2c2-4fc7-41e1-808a-10b99db7d6df
+          LOGIN_EMAIL: operator@demo.local
+          LOGIN_PASSWORD: Password123!
+        run: |
+          TOKEN=$(curl -fsS -X POST http://localhost:3000/auth/login \
+            -H "Content-Type: application/json" \
+            -H "x-tenant-id: ${TENANT_ID}" \
+            -H "x-user-id: ${USER_ID}" \
+            -d "{\"email\":\"${LOGIN_EMAIL}\",\"password\":\"${LOGIN_PASSWORD}\"}" \
+            | node -e "let d='';process.stdin.on('data',c=>d+=c).on('end',()=>{const j=JSON.parse(d);process.stdout.write(j.accessToken||'')})")
+
+          test -n "$TOKEN"
+          curl -fsS http://localhost:3000/operations/metrics \
+            -H "authorization: Bearer ${TOKEN}" \
+            -H "x-tenant-id: ${TENANT_ID}" \
+            -H "x-user-id: ${USER_ID}" \
+            | grep -q "eventArchiveQueryCount"
 
       - name: Run smoke triage flow
         run: npm run smoke:triage

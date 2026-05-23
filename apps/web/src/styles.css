@@ -336,6 +336,26 @@ select {
   color: var(--muted);
 }
 
+.health {
+  font-weight: 600;
+}
+
+.health-healthy {
+  color: #9ef59e;
+}
+
+.health-degraded {
+  color: #ffe09f;
+}
+
+.health-down {
+  color: #ffb8af;
+}
+
+.health-unknown {
+  color: var(--muted);
+}
+
 .cards-grid {
   display: grid;
   gap: 0.75rem;

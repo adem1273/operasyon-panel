@@ -32,6 +32,7 @@ Web uygulamasi React + Vite ile calisir bir operasyon paneli olarak baslatildi.
 - Event filtreleme (tur + reservation) ve subscribe.reservation butonu
 - Pause/resume event feed, max event limiti ve log temizleme
 - Yalnizca subscribe edilen reservation eventlerini gosterme ve event JSON export
+- Socket health test (manuel + periyodik ping), RTT ve failure metrikleri
 
 ## Zorunlu Giris Bilgileri
 

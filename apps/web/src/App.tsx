@@ -32,6 +32,8 @@ type Toast = {
   message: string;
 };
 
+type SocketHealth = "unknown" | "healthy" | "degraded" | "down";
+
 const defaultApiBaseUrl = import.meta.env.VITE_API_BASE_URL ?? "http://localhost:3000";
 
 const initialCredentials: Credentials = {
@@ -99,6 +101,11 @@ export function App(): React.JSX.Element {
   const [message, setMessage] = useState<string>("Bağlantı bilgilerini girip verileri çekebilirsin.");
   const [socketState, setSocketState] = useState<SocketState>("disconnected");
   const [socketMessage, setSocketMessage] = useState<string>("Canli akis bagli degil.");
+  const [socketHealth, setSocketHealth] = useState<SocketHealth>("unknown");
+  const [lastPingAt, setLastPingAt] = useState<string | null>(null);
+  const [lastPingRttMs, setLastPingRttMs] = useState<number | null>(null);
+  const [pingFailureCount, setPingFailureCount] = useState<number>(0);
+  const [consecutivePingFailureCount, setConsecutivePingFailureCount] = useState<number>(0);
   const [lastConnectedAt, setLastConnectedAt] = useState<string | null>(null);
   const [events, setEvents] = useState<RealtimeEvent[]>([]);
   const [isEventFeedPaused, setIsEventFeedPaused] = useState<boolean>(false);
@@ -116,6 +123,7 @@ export function App(): React.JSX.Element {
   const socketRef = useRef<Socket | null>(null);
   const refreshTimerRef = useRef<number | null>(null);
   const toastTimerRef = useRef<number | null>(null);
+  const healthIntervalRef = useRef<number | null>(null);
 
   const canFetch = useMemo(() => {
     return Boolean(credentials.tenantId && credentials.userId && credentials.accessToken);
@@ -197,6 +205,60 @@ export function App(): React.JSX.Element {
     }, 400);
   }
 
+  function stopHealthInterval(): void {
+    if (healthIntervalRef.current) {
+      window.clearInterval(healthIntervalRef.current);
+      healthIntervalRef.current = null;
+    }
+  }
+
+  function startHealthInterval(): void {
+    stopHealthInterval();
+    healthIntervalRef.current = window.setInterval(() => {
+      void runSocketHealthCheck(true);
+    }, 20000);
+  }
+
+  async function runSocketHealthCheck(silent: boolean): Promise<void> {
+    const socket = socketRef.current;
+    if (!socket || socketState !== "connected") {
+      setSocketHealth("unknown");
+      if (!silent) {
+        pushToast("error", "Health check icin aktif socket baglantisi yok.");
+      }
+      return;
+    }
+
+    const startedAt = Date.now();
+
+    try {
+      const response = await socket.timeout(5000).emitWithAck("ping");
+      const rtt = Date.now() - startedAt;
+
+      setLastPingAt(new Date().toISOString());
+      setLastPingRttMs(rtt);
+      setConsecutivePingFailureCount(0);
+      setSocketHealth(rtt <= 600 ? "healthy" : "degraded");
+
+      if (!silent) {
+        const suffix = response?.ok ? "ok" : "unexpected";
+        pushToast("success", `Socket health check: ${suffix} (${rtt}ms)`);
+      }
+    } catch {
+      setLastPingAt(new Date().toISOString());
+      setPingFailureCount((prev) => prev + 1);
+      setConsecutivePingFailureCount((prev) => {
+        const next = prev + 1;
+        setSocketHealth(next >= 2 ? "down" : "degraded");
+        return next;
+      });
+
+      if (!silent) {
+        pushToast("error", "Socket health check basarisiz (timeout).");
+      }
+    }
+  }
+
   async function loadDashboard(options?: { silent?: boolean }): Promise<void> {
     if (!canFetch) {
       setMessage("Tenant, user ve access token alanları zorunlu.");
@@ -241,8 +303,10 @@ export function App(): React.JSX.Element {
       socketRef.current.disconnect();
       socketRef.current = null;
     }
+    stopHealthInterval();
     setSocketState("disconnected");
     setSocketMessage("Canli akis bagli degil.");
+    setSocketHealth("unknown");
     pushToast("info", "Canli akis baglantisi sonlandirildi.");
   }
 
@@ -277,6 +341,10 @@ export function App(): React.JSX.Element {
       setSocketState("connected");
       setSocketMessage("Canli akis baglandi.");
       setLastConnectedAt(new Date().toISOString());
+      setSocketHealth("healthy");
+      setConsecutivePingFailureCount(0);
+      void runSocketHealthCheck(true);
+      startHealthInterval();
       pushToast("success", "Canli akis baglantisi kuruldu.");
 
       const trimmedReservation = subscriptionReservationId.trim();
@@ -289,6 +357,7 @@ export function App(): React.JSX.Element {
     socket.on("connect_error", (error: Error) => {
       setSocketState("error");
       setSocketMessage(`Baglanti hatasi: ${error.message}`);
+      setSocketHealth("down");
       pushToast("error", `Socket baglanti hatasi: ${error.message}`);
     });
 
@@ -312,10 +381,10 @@ export function App(): React.JSX.Element {
           at: new Date().toISOString(),
           detail: `${payload.previousStatus} -> ${payload.nextStatus}${payload.reason ? ` (${payload.reason})` : ""}`
         });
-          pushToast(
-            "info",
-            `Status eventi: ${payload.reservationId.slice(0, 8)} ${payload.previousStatus} -> ${payload.nextStatus}`
-          );
+        pushToast(
+          "info",
+          `Status eventi: ${payload.reservationId.slice(0, 8)} ${payload.previousStatus} -> ${payload.nextStatus}`
+        );
         scheduleRefresh();
       }
     );
@@ -329,12 +398,16 @@ export function App(): React.JSX.Element {
       setSocketState("connected");
       setSocketMessage(`Yeniden baglanti basarili (#${attempt}).`);
       setLastConnectedAt(new Date().toISOString());
+      setSocketHealth("healthy");
+      void runSocketHealthCheck(true);
       pushToast("success", "Socket yeniden baglandi.");
     });
 
     socket.on("disconnect", () => {
+      stopHealthInterval();
       setSocketState("disconnected");
       setSocketMessage("Canli akis baglantisi kapandi. Otomatik yeniden baglanma aktif.");
+      setSocketHealth("degraded");
       pushToast("info", "Socket baglantisi koptu, otomatik tekrar denenecek.");
     });
 
@@ -449,6 +522,7 @@ export function App(): React.JSX.Element {
       if (toastTimerRef.current) {
         window.clearTimeout(toastTimerRef.current);
       }
+      stopHealthInterval();
       if (socketRef.current) {
         socketRef.current.disconnect();
       }
@@ -636,6 +710,9 @@ export function App(): React.JSX.Element {
           <button type="button" className="btn" onClick={exportEventLogJson}>
             Event JSON Export
           </button>
+          <button type="button" className="btn" onClick={() => void runSocketHealthCheck(false)}>
+            Socket Health Test
+          </button>
         </div>
 
         <p className="muted">
@@ -651,6 +728,10 @@ export function App(): React.JSX.Element {
         </label>
         <p className="muted">
           Event feed: {isEventFeedPaused ? "PAUSED" : "LIVE"} | Suppressed while paused: {suppressedEventCount}
+        </p>
+        <p className={`muted health health-${socketHealth}`}>
+          Socket health: {socketHealth.toUpperCase()} | Last ping: {lastPingAt ? toLocalDate(lastPingAt) : "-"} |
+          RTT: {lastPingRttMs ?? "-"} ms | Failures: {pingFailureCount} (consecutive {consecutivePingFailureCount})
         </p>
 
         {filteredEvents.length === 0 ? (

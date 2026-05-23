@@ -1,0 +1,24 @@
+services:
+  postgres:
+    image: postgres:16
+    container_name: vipflow-postgres
+    environment:
+      POSTGRES_DB: vipflow
+      POSTGRES_USER: vipflow
+      POSTGRES_PASSWORD: vipflow
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+  redis:
+    image: redis:7
+    container_name: vipflow-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+
+volumes:
+  postgres_data:
+  redis_data:

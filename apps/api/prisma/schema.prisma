@@ -1,0 +1,221 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model Tenant {
+  id          String   @id @default(uuid()) @db.Uuid
+  name        String
+  slug        String   @unique
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  deletedAt   DateTime?
+  users       User[]
+  userDevices UserDevice[]
+  reservations Reservation[]
+  notificationDeliveries NotificationDelivery[]
+  reservationStatusLogs ReservationStatusLog[]
+  auditLogs   AuditLog[]
+  authSessions AuthSession[]
+
+  @@map("tenants")
+}
+
+model User {
+  id          String   @id @default(uuid()) @db.Uuid
+  tenantId    String   @db.Uuid
+  email       String
+  fullName    String
+  phoneE164   String?
+  passwordHash String?
+  role        UserRole
+  isActive    Boolean  @default(true)
+  authLockedUntil DateTime?
+  authLockReason  String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  deletedAt   DateTime?
+  tenant      Tenant   @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  auditLogs   AuditLog[]
+  authSessions AuthSession[]
+  reservationStatusLogs ReservationStatusLog[]
+  userDevices UserDevice[]
+
+  @@unique([tenantId, email])
+  @@index([tenantId, role])
+  @@map("users")
+}
+
+model UserDevice {
+  id         String         @id @default(uuid()) @db.Uuid
+  tenantId   String         @db.Uuid
+  userId     String         @db.Uuid
+  token      String
+  platform   DevicePlatform
+  isActive   Boolean        @default(true)
+  lastSeenAt DateTime?
+  createdAt  DateTime       @default(now())
+  updatedAt  DateTime       @updatedAt
+  tenant     Tenant         @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  user       User           @relation(fields: [userId], references: [id], onDelete: Restrict)
+
+  @@unique([tenantId, token])
+  @@index([tenantId, userId, isActive])
+  @@map("user_devices")
+}
+
+model AuthSession {
+  id               String   @id @db.Uuid
+  tenantId         String   @db.Uuid
+  userId           String   @db.Uuid
+  refreshTokenHash String
+  userAgent        String?
+  ipAddress        String?
+  expiresAt        DateTime
+  revokedAt        DateTime?
+  compromisedAt    DateTime?
+  compromisedReason String?
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+  tenant           Tenant   @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  user             User     @relation(fields: [userId], references: [id], onDelete: Restrict)
+
+  @@index([tenantId, userId])
+  @@index([tenantId, revokedAt])
+  @@index([expiresAt])
+  @@map("auth_sessions")
+}
+
+model Reservation {
+  id             String            @id @default(uuid()) @db.Uuid
+  tenantId       String            @db.Uuid
+  customerName   String
+  pickupLocation String
+  dropoffLocation String
+  pickupTime     DateTime
+  status         ReservationStatus @default(PENDING_APPROVAL)
+  createdAt      DateTime          @default(now())
+  updatedAt      DateTime          @updatedAt
+  deletedAt      DateTime?
+  tenant         Tenant            @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  statusLogs     ReservationStatusLog[]
+  notificationDeliveries NotificationDelivery[]
+
+  @@index([tenantId, status])
+  @@index([tenantId, pickupTime])
+  @@map("reservations")
+}
+
+model NotificationDelivery {
+  id              String                   @id @default(uuid()) @db.Uuid
+  tenantId        String                   @db.Uuid
+  reservationId   String                   @db.Uuid
+  channel         NotificationChannel
+  status          NotificationDeliveryStatus
+  errorCategory   NotificationErrorCategory?
+  errorMessage    String?
+  attemptNumber   Int
+  queueJobId      String
+  queueJobName    String
+  sourceJobId     String?
+  providerPayload Json?
+  providerResponse Json?
+  sentAt          DateTime?
+  createdAt       DateTime                 @default(now())
+  updatedAt       DateTime                 @updatedAt
+  tenant          Tenant                   @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  reservation     Reservation              @relation(fields: [reservationId], references: [id], onDelete: Restrict)
+
+  @@index([tenantId, reservationId, createdAt])
+  @@index([tenantId, queueJobId, channel, status])
+  @@map("notification_deliveries")
+}
+
+model ReservationStatusLog {
+  id               String            @id @default(uuid()) @db.Uuid
+  tenantId         String            @db.Uuid
+  reservationId    String            @db.Uuid
+  changedByUserId  String?           @db.Uuid
+  previousStatus   ReservationStatus
+  newStatus        ReservationStatus
+  reason           String?
+  createdAt        DateTime          @default(now())
+  tenant           Tenant            @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  reservation      Reservation       @relation(fields: [reservationId], references: [id], onDelete: Restrict)
+  changedByUser    User?             @relation(fields: [changedByUserId], references: [id], onDelete: SetNull)
+
+  @@index([tenantId, reservationId, createdAt])
+  @@index([tenantId, newStatus])
+  @@map("reservation_status_logs")
+}
+
+model AuditLog {
+  id          String   @id @default(uuid()) @db.Uuid
+  tenantId    String   @db.Uuid
+  userId      String?  @db.Uuid
+  actionType  String
+  moduleName  String
+  entityType  String
+  entityId    String
+  oldValue    Json?
+  newValue    Json?
+  ipAddress   String?
+  deviceInfo  String?
+  createdAt   DateTime @default(now())
+  tenant      Tenant   @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  user        User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@index([tenantId, moduleName, entityType])
+  @@index([tenantId, createdAt])
+  @@map("audit_logs")
+}
+
+enum UserRole {
+  SUPER_ADMIN
+  TENANT_ADMIN
+  OPERATOR
+  DRIVER
+  ACCOUNTANT
+}
+
+enum DevicePlatform {
+  IOS
+  ANDROID
+  WEB
+}
+
+enum NotificationChannel {
+  FCM
+  WHATSAPP
+}
+
+enum NotificationDeliveryStatus {
+  SENT
+  SKIPPED
+  FAILED
+}
+
+enum NotificationErrorCategory {
+  TRANSIENT
+  PERMANENT
+}
+
+enum ReservationStatus {
+  PENDING_APPROVAL
+  CONFIRMED
+  DRIVER_ASSIGNED
+  DRIVER_ACCEPTED
+  DRIVER_EN_ROUTE
+  CUSTOMER_PICKED_UP
+  IN_PROGRESS
+  COMPLETED
+  CANCELLED
+  NO_SHOW
+  DELAYED
+  FAILED
+}

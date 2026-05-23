@@ -33,6 +33,7 @@ Web uygulamasi React + Vite ile calisir bir operasyon paneli olarak baslatildi.
 - Pause/resume event feed, max event limiti ve log temizleme
 - Yalnizca subscribe edilen reservation eventlerini gosterme ve event JSON export
 - Socket health test (manuel + periyodik ping), RTT ve failure metrikleri
+- Event severity rozetleri (high/medium/low) ve tarih araligiyla filtreli export
 
 ## Zorunlu Giris Bilgileri
 

@@ -261,7 +261,7 @@ select {
 
 .realtime-controls {
   display: grid;
-  grid-template-columns: repeat(3, minmax(160px, 1fr));
+  grid-template-columns: repeat(4, minmax(150px, 1fr));
   gap: 0.6rem;
   margin-bottom: 0.65rem;
   align-items: end;
@@ -330,6 +330,30 @@ select {
 .event-top span {
   color: var(--muted);
   font-size: 0.78rem;
+}
+
+.severity {
+  display: inline-flex;
+  margin-top: 0.3rem;
+  border-radius: 999px;
+  padding: 0.15rem 0.45rem;
+  font-size: 0.7rem;
+  font-weight: 700;
+}
+
+.severity-high {
+  color: #ffd0ca;
+  background: rgba(240, 125, 111, 0.2);
+}
+
+.severity-medium {
+  color: #ffe7b7;
+  background: rgba(244, 180, 95, 0.2);
+}
+
+.severity-low {
+  color: #b5f5e4;
+  background: rgba(97, 208, 187, 0.2);
 }
 
 .muted {

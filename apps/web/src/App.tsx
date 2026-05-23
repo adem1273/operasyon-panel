@@ -24,6 +24,8 @@ type RealtimeEvent = {
   detail: string;
 };
 
+type EventSeverity = "high" | "medium" | "low";
+
 type EventTypeFilter = "ALL" | "reservation.created" | "reservation.status.updated";
 
 type Toast = {
@@ -113,6 +115,8 @@ export function App(): React.JSX.Element {
   const [suppressedEventCount, setSuppressedEventCount] = useState<number>(0);
   const [eventTypeFilter, setEventTypeFilter] = useState<EventTypeFilter>("ALL");
   const [eventReservationFilter, setEventReservationFilter] = useState<string>("");
+  const [eventFrom, setEventFrom] = useState<string>("");
+  const [eventTo, setEventTo] = useState<string>("");
   const [onlySubscribedReservationEvents, setOnlySubscribedReservationEvents] = useState<boolean>(false);
   const [subscriptionReservationId, setSubscriptionReservationId] = useState<string>("");
   const [lastSubscribedReservationId, setLastSubscribedReservationId] = useState<string>("");
@@ -135,21 +139,43 @@ export function App(): React.JSX.Element {
       const reservationMatches =
         !eventReservationFilter ||
         event.reservationId.toLowerCase().includes(eventReservationFilter.trim().toLowerCase());
+      const fromMatches = !eventFrom || new Date(event.at).getTime() >= new Date(eventFrom).getTime();
+      const toMatches = !eventTo || new Date(event.at).getTime() <= new Date(eventTo).getTime();
       const subscribedOnlyMatches =
         !onlySubscribedReservationEvents ||
         (lastSubscribedReservationId
           ? event.reservationId.toLowerCase() === lastSubscribedReservationId.toLowerCase()
           : false);
 
-      return typeMatches && reservationMatches && subscribedOnlyMatches;
+      return typeMatches && reservationMatches && fromMatches && toMatches && subscribedOnlyMatches;
     });
   }, [
+    eventFrom,
     eventReservationFilter,
+    eventTo,
     eventTypeFilter,
     events,
     lastSubscribedReservationId,
     onlySubscribedReservationEvents
   ]);
+
+  function getEventSeverity(event: RealtimeEvent): EventSeverity {
+    const detail = event.detail.toUpperCase();
+    if (
+      detail.includes("FAILED") ||
+      detail.includes("CANCELLED") ||
+      detail.includes("NO_SHOW") ||
+      detail.includes("DELAYED")
+    ) {
+      return "high";
+    }
+
+    if (event.type === "reservation.status.updated") {
+      return "medium";
+    }
+
+    return "low";
+  }
 
   async function fetchJson<T>(path: string, init?: RequestInit): Promise<T> {
     const response = await fetch(`${credentials.apiBaseUrl}${path}`, {
@@ -438,11 +464,17 @@ export function App(): React.JSX.Element {
   }
 
   function exportEventLogJson(): void {
+    const dateRangeLabel = `${eventFrom || "start"}_${eventTo || "end"}`
+      .replace(/[\s:T]/g, "-")
+      .replace(/[^a-zA-Z0-9\-_]/g, "");
+
     const payload = {
       exportedAt: new Date().toISOString(),
       filteredBy: {
         eventType: eventTypeFilter,
         reservationSearch: eventReservationFilter,
+        from: eventFrom || null,
+        to: eventTo || null,
         onlySubscribedReservationEvents,
         subscribedReservationId: lastSubscribedReservationId || null
       },
@@ -450,7 +482,11 @@ export function App(): React.JSX.Element {
       items: filteredEvents
     };
 
-    downloadBlob(JSON.stringify(payload, null, 2), "application/json", "realtime-events.json");
+    downloadBlob(
+      JSON.stringify(payload, null, 2),
+      "application/json",
+      `realtime-events-${dateRangeLabel || "all"}.json`
+    );
     pushToast("success", `Event JSON export olusturuldu (${filteredEvents.length} kayit).`);
   }
 
@@ -677,6 +713,22 @@ export function App(): React.JSX.Element {
             />
           </label>
           <label>
+            Event From
+            <input
+              type="datetime-local"
+              value={eventFrom}
+              onChange={(event) => setEventFrom(event.target.value)}
+            />
+          </label>
+          <label>
+            Event To
+            <input
+              type="datetime-local"
+              value={eventTo}
+              onChange={(event) => setEventTo(event.target.value)}
+            />
+          </label>
+          <label>
             subscribe.reservation ID
             <input
               value={subscriptionReservationId}
@@ -744,6 +796,9 @@ export function App(): React.JSX.Element {
                   <strong>{event.type}</strong>
                   <span>{toLocalDate(event.at)}</span>
                 </div>
+                <span className={`severity severity-${getEventSeverity(event)}`}>
+                  {getEventSeverity(event).toUpperCase()}
+                </span>
                 <p>Reservation: {event.reservationId}</p>
                 <p>{event.detail}</p>
               </li>

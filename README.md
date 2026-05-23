@@ -119,6 +119,7 @@ Enterprise AI-powered multi-tenant SaaS platform for VIP transportation operatio
    - auto reconnect status, last connected timestamp, realtime toast notifications
    - event type/reservation filtering and subscribe.reservation controls
    - pause/resume event feed, max event cap, clear log actions
+   - subscribed-only event mode and realtime event JSON export
 
 ## Realtime WebSocket
 

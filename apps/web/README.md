@@ -31,6 +31,7 @@ Web uygulamasi React + Vite ile calisir bir operasyon paneli olarak baslatildi.
 - Otomatik reconnect, son baglanti zamani ve toast bildirimleri
 - Event filtreleme (tur + reservation) ve subscribe.reservation butonu
 - Pause/resume event feed, max event limiti ve log temizleme
+- Yalnizca subscribe edilen reservation eventlerini gosterme ve event JSON export
 
 ## Zorunlu Giris Bilgileri
 

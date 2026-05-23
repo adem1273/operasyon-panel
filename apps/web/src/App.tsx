@@ -106,6 +106,7 @@ export function App(): React.JSX.Element {
   const [suppressedEventCount, setSuppressedEventCount] = useState<number>(0);
   const [eventTypeFilter, setEventTypeFilter] = useState<EventTypeFilter>("ALL");
   const [eventReservationFilter, setEventReservationFilter] = useState<string>("");
+  const [onlySubscribedReservationEvents, setOnlySubscribedReservationEvents] = useState<boolean>(false);
   const [subscriptionReservationId, setSubscriptionReservationId] = useState<string>("");
   const [lastSubscribedReservationId, setLastSubscribedReservationId] = useState<string>("");
   const [toasts, setToasts] = useState<Toast[]>([]);
@@ -126,10 +127,21 @@ export function App(): React.JSX.Element {
       const reservationMatches =
         !eventReservationFilter ||
         event.reservationId.toLowerCase().includes(eventReservationFilter.trim().toLowerCase());
+      const subscribedOnlyMatches =
+        !onlySubscribedReservationEvents ||
+        (lastSubscribedReservationId
+          ? event.reservationId.toLowerCase() === lastSubscribedReservationId.toLowerCase()
+          : false);
 
-      return typeMatches && reservationMatches;
+      return typeMatches && reservationMatches && subscribedOnlyMatches;
     });
-  }, [eventReservationFilter, eventTypeFilter, events]);
+  }, [
+    eventReservationFilter,
+    eventTypeFilter,
+    events,
+    lastSubscribedReservationId,
+    onlySubscribedReservationEvents
+  ]);
 
   async function fetchJson<T>(path: string, init?: RequestInit): Promise<T> {
     const response = await fetch(`${credentials.apiBaseUrl}${path}`, {
@@ -350,6 +362,23 @@ export function App(): React.JSX.Element {
     setEvents([]);
     setSuppressedEventCount(0);
     pushToast("info", "Event log temizlendi.");
+  }
+
+  function exportEventLogJson(): void {
+    const payload = {
+      exportedAt: new Date().toISOString(),
+      filteredBy: {
+        eventType: eventTypeFilter,
+        reservationSearch: eventReservationFilter,
+        onlySubscribedReservationEvents,
+        subscribedReservationId: lastSubscribedReservationId || null
+      },
+      count: filteredEvents.length,
+      items: filteredEvents
+    };
+
+    downloadBlob(JSON.stringify(payload, null, 2), "application/json", "realtime-events.json");
+    pushToast("success", `Event JSON export olusturuldu (${filteredEvents.length} kayit).`);
   }
 
   async function handleExport(format: "csv" | "json"): Promise<void> {
@@ -604,11 +633,22 @@ export function App(): React.JSX.Element {
           <button type="button" className="btn" onClick={clearEventLog}>
             Event Log Temizle
           </button>
+          <button type="button" className="btn" onClick={exportEventLogJson}>
+            Event JSON Export
+          </button>
         </div>
 
         <p className="muted">
           Son subscribe.reservation: {lastSubscribedReservationId || "-"}
         </p>
+        <label className="toggle muted">
+          <input
+            type="checkbox"
+            checked={onlySubscribedReservationEvents}
+            onChange={(event) => setOnlySubscribedReservationEvents(event.target.checked)}
+          />
+          <span>Yalnizca subscribe edilen reservation eventleri</span>
+        </label>
         <p className="muted">
           Event feed: {isEventFeedPaused ? "PAUSED" : "LIVE"} | Suppressed while paused: {suppressedEventCount}
         </p>

@@ -157,6 +157,66 @@ Namespace:
 - Provisioned dashboard:
    - VIPFlow Operations Metrics
 
+Grafana acceptance checklist:
+
+1. Open VIPFlow Operations Metrics dashboard in Grafana.
+2. Set time range to Last 15 minutes or Last 1 hour.
+3. Verify event archive query total panel is greater than or equal to 1 after archive requests.
+4. Verify triage action total panel is greater than or equal to 1 after acknowledge/snooze/assign/resolve.
+5. Verify triage failures panel stays at 0 in a healthy flow.
+6. If values are stale, click Refresh on the dashboard and re-check.
+
+Grafana kabul kontrol listesi (TR):
+
+1. Grafana içinde VIPFlow Operations Metrics dashboard'unu acin.
+2. Zaman araligini Son 15 dakika veya Son 1 saat olarak secin.
+3. Archive isteklerinden sonra event archive query total panelinin 1 veya daha buyuk oldugunu dogrulayin.
+4. acknowledge/snooze/assign/resolve aksiyonlarindan sonra triage action total panelinin 1 veya daha buyuk oldugunu dogrulayin.
+5. Saglikli akista triage failures panelinin 0 kaldigini dogrulayin.
+6. Degerler eski gorunuyorsa dashboard uzerinden Refresh yapip yeniden kontrol edin.
+
+Quick command set (generate metrics + verify):
+
+```bash
+# 1) Generate archive and triage metrics
+npm run smoke:triage
+npm run test:integration:api
+
+# 2) Verify current metrics via Prometheus
+curl -sS --get 'http://localhost:9090/api/v1/query' \
+   --data-urlencode 'query=vipflow_operations_event_archive_queries_total'
+
+curl -sS --get 'http://localhost:9090/api/v1/query' \
+   --data-urlencode 'query=vipflow_operations_triage_actions_total'
+
+curl -sS --get 'http://localhost:9090/api/v1/query' \
+   --data-urlencode 'query=vipflow_operations_triage_failures_total'
+
+# 3) Open Grafana dashboard
+"$BROWSER" 'http://localhost:3001/d/vipflow-operations-metrics/vipflow-operations-metrics'
+```
+
+Hizli komut seti (metrik uret + dogrula):
+
+```bash
+# 1) Archive ve triage metriklerini uret
+npm run smoke:triage
+npm run test:integration:api
+
+# 2) Prometheus uzerinden anlik degerleri kontrol et
+curl -sS --get 'http://localhost:9090/api/v1/query' \
+   --data-urlencode 'query=vipflow_operations_event_archive_queries_total'
+
+curl -sS --get 'http://localhost:9090/api/v1/query' \
+   --data-urlencode 'query=vipflow_operations_triage_actions_total'
+
+curl -sS --get 'http://localhost:9090/api/v1/query' \
+   --data-urlencode 'query=vipflow_operations_triage_failures_total'
+
+# 3) Grafana dashboard ac
+"$BROWSER" 'http://localhost:3001/d/vipflow-operations-metrics/vipflow-operations-metrics'
+```
+
 Handshake requirements:
 
 - auth.token: Bearer <accessToken> or raw access token

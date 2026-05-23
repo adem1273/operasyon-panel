@@ -34,6 +34,8 @@ Web uygulamasi React + Vite ile calisir bir operasyon paneli olarak baslatildi.
 - Yalnizca subscribe edilen reservation eventlerini gosterme ve event JSON export
 - Socket health test (manuel + periyodik ping), RTT ve failure metrikleri
 - Event severity rozetleri (high/medium/low) ve tarih araligiyla filtreli export
+- Event archive paneli: severity/triage/eventType/date filtreleri ve CSV/JSON export
+- Priority queue + bulk triage: acknowledge, snooze, assign, resolve
 
 ## Zorunlu Giris Bilgileri
 

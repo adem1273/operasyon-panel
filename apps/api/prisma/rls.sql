@@ -5,6 +5,7 @@ ALTER TABLE users ENABLE ROW LEVEL SECURITY;
 ALTER TABLE user_devices ENABLE ROW LEVEL SECURITY;
 ALTER TABLE reservations ENABLE ROW LEVEL SECURITY;
 ALTER TABLE notification_deliveries ENABLE ROW LEVEL SECURITY;
+ALTER TABLE operational_events ENABLE ROW LEVEL SECURITY;
 ALTER TABLE reservation_status_logs ENABLE ROW LEVEL SECURITY;
 ALTER TABLE audit_logs ENABLE ROW LEVEL SECURITY;
 ALTER TABLE auth_sessions ENABLE ROW LEVEL SECURITY;
@@ -27,6 +28,10 @@ USING ("tenantId" = current_setting('app.current_tenant_id')::uuid);
 
 DROP POLICY IF EXISTS tenant_isolation_reservation_status_logs ON reservation_status_logs;
 CREATE POLICY tenant_isolation_reservation_status_logs ON reservation_status_logs
+USING ("tenantId" = current_setting('app.current_tenant_id')::uuid);
+
+DROP POLICY IF EXISTS tenant_isolation_operational_events ON operational_events;
+CREATE POLICY tenant_isolation_operational_events ON operational_events
 USING ("tenantId" = current_setting('app.current_tenant_id')::uuid);
 
 DROP POLICY IF EXISTS tenant_isolation_audit_logs ON audit_logs;

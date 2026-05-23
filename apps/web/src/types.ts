@@ -43,3 +43,29 @@ export type DeadLetterRetryResponse = {
   skippedPermanent: number;
   duplicateGroups: number;
 };
+
+export type EventArchiveRow = {
+  id: string;
+  reservationId?: string;
+  eventType: string;
+  severity: "LOW" | "MEDIUM" | "HIGH";
+  title: string;
+  detail: string;
+  eventAt: string;
+  triageStatus: "OPEN" | "ACKNOWLEDGED" | "SNOOZED" | "RESOLVED";
+  acknowledgedAt?: string;
+  acknowledgedByUserId?: string;
+  snoozedUntil?: string;
+  assignedUserId?: string;
+};
+
+export type EventArchiveResponse = {
+  items: EventArchiveRow[];
+  total: number;
+};
+
+export type EventTriageResponse = {
+  action: "acknowledge" | "snooze" | "assign" | "resolve";
+  matched: number;
+  updated: number;
+};

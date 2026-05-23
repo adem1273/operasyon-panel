@@ -122,6 +122,8 @@ Enterprise AI-powered multi-tenant SaaS platform for VIP transportation operatio
    - subscribed-only event mode and realtime event JSON export
    - socket health self-test (manual + periodic ping, RTT and failure metrics)
    - event severity badges and date-range filtered realtime export
+   - persistent event archive API with date-range filter and CSV/JSON export
+   - alarm triage workflow (acknowledge, snooze, assign, resolve) with priority queue ordering
 
 ## Realtime WebSocket
 

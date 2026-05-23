@@ -19,6 +19,7 @@ model Tenant {
   userDevices UserDevice[]
   reservations Reservation[]
   notificationDeliveries NotificationDelivery[]
+  operationalEvents OperationalEvent[]
   reservationStatusLogs ReservationStatusLog[]
   auditLogs   AuditLog[]
   authSessions AuthSession[]
@@ -44,6 +45,8 @@ model User {
   auditLogs   AuditLog[]
   authSessions AuthSession[]
   reservationStatusLogs ReservationStatusLog[]
+  acknowledgedOperationalEvents OperationalEvent[] @relation("OperationalEventAcknowledgedBy")
+  assignedOperationalEvents OperationalEvent[] @relation("OperationalEventAssignedUser")
   userDevices UserDevice[]
 
   @@unique([tenantId, email])
@@ -105,6 +108,7 @@ model Reservation {
   tenant         Tenant            @relation(fields: [tenantId], references: [id], onDelete: Restrict)
   statusLogs     ReservationStatusLog[]
   notificationDeliveries NotificationDelivery[]
+  operationalEvents OperationalEvent[]
 
   @@index([tenantId, status])
   @@index([tenantId, pickupTime])
@@ -175,6 +179,34 @@ model AuditLog {
   @@map("audit_logs")
 }
 
+model OperationalEvent {
+  id                 String                 @id @default(uuid()) @db.Uuid
+  tenantId           String                 @db.Uuid
+  reservationId      String?                @db.Uuid
+  eventType          OperationalEventType
+  severity           OperationalEventSeverity
+  title              String
+  detail             String
+  eventAt            DateTime               @default(now())
+  metadata           Json?
+  triageStatus       AlarmTriageStatus      @default(OPEN)
+  acknowledgedAt     DateTime?
+  acknowledgedByUserId String?              @db.Uuid
+  snoozedUntil       DateTime?
+  assignedUserId     String?                @db.Uuid
+  createdAt          DateTime               @default(now())
+  updatedAt          DateTime               @updatedAt
+  tenant             Tenant                 @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  reservation        Reservation?           @relation(fields: [reservationId], references: [id], onDelete: SetNull)
+  acknowledgedByUser User?                  @relation("OperationalEventAcknowledgedBy", fields: [acknowledgedByUserId], references: [id], onDelete: SetNull)
+  assignedUser       User?                  @relation("OperationalEventAssignedUser", fields: [assignedUserId], references: [id], onDelete: SetNull)
+
+  @@index([tenantId, eventAt])
+  @@index([tenantId, severity, triageStatus, eventAt])
+  @@index([tenantId, reservationId, eventAt])
+  @@map("operational_events")
+}
+
 enum UserRole {
   SUPER_ADMIN
   TENANT_ADMIN
@@ -218,4 +250,22 @@ enum ReservationStatus {
   NO_SHOW
   DELAYED
   FAILED
+}
+
+enum OperationalEventType {
+  RESERVATION_CREATED
+  RESERVATION_STATUS_UPDATED
+}
+
+enum OperationalEventSeverity {
+  LOW
+  MEDIUM
+  HIGH
+}
+
+enum AlarmTriageStatus {
+  OPEN
+  ACKNOWLEDGED
+  SNOOZED
+  RESOLVED
 }

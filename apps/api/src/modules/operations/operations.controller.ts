@@ -48,6 +48,30 @@ type DeadLetterRetryResponse = {
   duplicateGroups: number;
 };
 
+type EventArchiveResponse = {
+  items: Array<{
+    id: string;
+    reservationId?: string;
+    eventType: string;
+    severity: string;
+    title: string;
+    detail: string;
+    eventAt: string;
+    triageStatus: string;
+    acknowledgedAt?: string;
+    acknowledgedByUserId?: string;
+    snoozedUntil?: string;
+    assignedUserId?: string;
+  }>;
+  total: number;
+};
+
+type EventTriageResponse = {
+  action: "acknowledge" | "snooze" | "assign" | "resolve";
+  matched: number;
+  updated: number;
+};
+
 @Controller("operations")
 @Roles(UserRole.SUPER_ADMIN, UserRole.TENANT_ADMIN, UserRole.OPERATOR, UserRole.ACCOUNTANT)
 export class OperationsController {
@@ -145,5 +169,75 @@ export class OperationsController {
     }
   ): Promise<DeadLetterRetryResponse> {
     return this.operationsService.retryNotificationDeadLetter(body);
+  }
+
+  @Get("event-archive")
+  getEventArchive(
+    @Query("limit", new DefaultValuePipe(25), ParseIntPipe) limit: number,
+    @Query("offset", new DefaultValuePipe(0), ParseIntPipe) offset: number,
+    @Query("eventType") eventType?: string,
+    @Query("severity") severity?: string,
+    @Query("triageStatus") triageStatus?: string,
+    @Query("reservationId") reservationId?: string,
+    @Query("assignedUserId") assignedUserId?: string,
+    @Query("from") from?: string,
+    @Query("to") to?: string
+  ): Promise<EventArchiveResponse> {
+    return this.operationsService.getEventArchive({
+      limit,
+      offset,
+      eventType,
+      severity,
+      triageStatus,
+      reservationId,
+      assignedUserId,
+      from,
+      to
+    });
+  }
+
+  @Get("event-archive/export")
+  async exportEventArchive(
+    @Query("format", new DefaultValuePipe("csv")) format: string,
+    @Query("limit", new DefaultValuePipe(1000), ParseIntPipe) limit: number,
+    @Query("offset", new DefaultValuePipe(0), ParseIntPipe) offset: number,
+    @Query("eventType") eventType?: string,
+    @Query("severity") severity?: string,
+    @Query("triageStatus") triageStatus?: string,
+    @Query("reservationId") reservationId?: string,
+    @Query("assignedUserId") assignedUserId?: string,
+    @Query("from") from?: string,
+    @Query("to") to?: string,
+    @Res({ passthrough: true }) response?: Response
+  ): Promise<string> {
+    const exported = await this.operationsService.exportEventArchive({
+      format,
+      limit,
+      offset,
+      eventType,
+      severity,
+      triageStatus,
+      reservationId,
+      assignedUserId,
+      from,
+      to
+    });
+
+    response?.setHeader("Content-Type", exported.contentType);
+    response?.setHeader("Content-Disposition", `attachment; filename="${exported.fileName}"`);
+    return exported.body;
+  }
+
+  @Post("event-archive/triage")
+  triageEventArchive(
+    @Body()
+    body: {
+      eventIds: string[];
+      action: "acknowledge" | "snooze" | "assign" | "resolve";
+      snoozedUntil?: string;
+      assignedUserId?: string;
+    }
+  ): Promise<EventTriageResponse> {
+    return this.operationsService.triageEventArchive(body);
   }
 }

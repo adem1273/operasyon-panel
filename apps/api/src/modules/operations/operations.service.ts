@@ -1,12 +1,15 @@
 import { BadRequestException, Injectable, UnauthorizedException } from "@nestjs/common";
 import {
+  AlarmTriageStatus,
   NotificationChannel,
   NotificationDeliveryStatus,
   NotificationErrorCategory,
+  OperationalEventSeverity,
+  OperationalEventType,
   Prisma,
   ReservationStatus
 } from "@prisma/client";
-import { getCurrentTenantId } from "../../common/context/request-context";
+import { getCurrentTenantId, getCurrentUserId } from "../../common/context/request-context";
 import { PrismaService } from "../../common/prisma/prisma.service";
 import { QueueService } from "../../common/queue/queue.service";
 
@@ -62,6 +65,59 @@ type DeadLetterRetryResult = {
   enqueued: number;
   skippedPermanent: number;
   duplicateGroups: number;
+};
+
+type EventArchiveQueryInput = {
+  limit: number;
+  offset: number;
+  eventType?: string;
+  severity?: string;
+  triageStatus?: string;
+  reservationId?: string;
+  assignedUserId?: string;
+  from?: string;
+  to?: string;
+};
+
+type EventArchiveRow = {
+  id: string;
+  reservationId?: string;
+  eventType: string;
+  severity: string;
+  title: string;
+  detail: string;
+  eventAt: string;
+  triageStatus: string;
+  acknowledgedAt?: string;
+  acknowledgedByUserId?: string;
+  snoozedUntil?: string;
+  assignedUserId?: string;
+};
+
+type EventArchiveQueryResult = {
+  items: EventArchiveRow[];
+  total: number;
+};
+
+type EventArchiveExportResult = {
+  contentType: string;
+  fileName: string;
+  body: string;
+};
+
+type EventTriageAction = "acknowledge" | "snooze" | "assign" | "resolve";
+
+type EventTriageInput = {
+  eventIds: string[];
+  action: EventTriageAction;
+  snoozedUntil?: string;
+  assignedUserId?: string;
+};
+
+type EventTriageResult = {
+  action: EventTriageAction;
+  matched: number;
+  updated: number;
 };
 
 @Injectable()
@@ -349,6 +405,206 @@ export class OperationsService {
     };
   }
 
+  async getEventArchive(input: EventArchiveQueryInput): Promise<EventArchiveQueryResult> {
+    const tenantId = getCurrentTenantId();
+    if (!tenantId) {
+      throw new UnauthorizedException("Missing tenant context");
+    }
+
+    const safeLimit = Math.max(1, Math.min(input.limit, 200));
+    const safeOffset = Math.max(0, input.offset);
+    const where = this.buildEventArchiveWhere({
+      tenantId,
+      eventType: input.eventType,
+      severity: input.severity,
+      triageStatus: input.triageStatus,
+      reservationId: input.reservationId,
+      assignedUserId: input.assignedUserId,
+      from: input.from,
+      to: input.to
+    });
+
+    const [total, rows] = await Promise.all([
+      this.prisma.operationalEvent.count({ where }),
+      this.prisma.operationalEvent.findMany({
+        where,
+        orderBy: [{ triageStatus: "asc" }, { severity: "desc" }, { eventAt: "desc" }],
+        take: safeLimit,
+        skip: safeOffset
+      })
+    ]);
+
+    return {
+      total,
+      items: rows.map((row) => this.mapEventArchiveRow(row))
+    };
+  }
+
+  async exportEventArchive(input: EventArchiveQueryInput & { format?: string }): Promise<EventArchiveExportResult> {
+    const tenantId = getCurrentTenantId();
+    if (!tenantId) {
+      throw new UnauthorizedException("Missing tenant context");
+    }
+
+    const format = this.parseExportFormat(input.format);
+    const safeLimit = Math.max(1, Math.min(input.limit, 5000));
+    const safeOffset = Math.max(0, input.offset);
+    const where = this.buildEventArchiveWhere({
+      tenantId,
+      eventType: input.eventType,
+      severity: input.severity,
+      triageStatus: input.triageStatus,
+      reservationId: input.reservationId,
+      assignedUserId: input.assignedUserId,
+      from: input.from,
+      to: input.to
+    });
+
+    const rows = await this.prisma.operationalEvent.findMany({
+      where,
+      orderBy: [{ triageStatus: "asc" }, { severity: "desc" }, { eventAt: "desc" }],
+      take: safeLimit,
+      skip: safeOffset
+    });
+
+    const items = rows.map((row) => this.mapEventArchiveRow(row));
+    const datePart = new Date().toISOString().slice(0, 10);
+
+    if (format === "json") {
+      return {
+        contentType: "application/json; charset=utf-8",
+        fileName: `event-archive-${datePart}.json`,
+        body: JSON.stringify(
+          {
+            exportedAt: new Date().toISOString(),
+            count: items.length,
+            items
+          },
+          null,
+          2
+        )
+      };
+    }
+
+    return {
+      contentType: "text/csv; charset=utf-8",
+      fileName: `event-archive-${datePart}.csv`,
+      body: this.toEventArchiveCsv(items)
+    };
+  }
+
+  async triageEventArchive(input: EventTriageInput): Promise<EventTriageResult> {
+    const tenantId = getCurrentTenantId();
+    if (!tenantId) {
+      throw new UnauthorizedException("Missing tenant context");
+    }
+
+    const userId = getCurrentUserId();
+    if (!userId) {
+      throw new UnauthorizedException("Missing user context");
+    }
+
+    if (!Array.isArray(input.eventIds) || input.eventIds.length === 0) {
+      throw new BadRequestException("eventIds is required");
+    }
+
+    const uniqueEventIds = Array.from(new Set(input.eventIds.map((value) => value.trim()).filter(Boolean)));
+    if (uniqueEventIds.length === 0) {
+      throw new BadRequestException("eventIds is required");
+    }
+
+    const action = input.action;
+    const rows = await this.prisma.operationalEvent.findMany({
+      where: {
+        tenantId,
+        id: { in: uniqueEventIds }
+      },
+      select: {
+        id: true
+      }
+    });
+
+    const matched = rows.length;
+
+    if (matched === 0) {
+      return {
+        action,
+        matched,
+        updated: 0
+      };
+    }
+
+    const data = this.buildTriageUpdateData(action, userId, input);
+    const updates = rows.map((row) =>
+      this.prisma.operationalEvent.update({
+        where: {
+          id: row.id
+        },
+        data
+      })
+    );
+
+    const updated = await this.prisma.$transaction(updates);
+
+    return {
+      action,
+      matched,
+      updated: updated.length
+    };
+  }
+
+  async recordReservationCreatedEvent(payload: {
+    tenantId: string;
+    reservationId: string;
+    pickupTime: string;
+  }): Promise<void> {
+    await this.prisma.operationalEvent.create({
+      data: {
+        tenantId: payload.tenantId,
+        reservationId: payload.reservationId,
+        eventType: OperationalEventType.RESERVATION_CREATED,
+        severity: OperationalEventSeverity.LOW,
+        title: "Reservation created",
+        detail: `Reservation ${payload.reservationId} olusturuldu. Pickup ${payload.pickupTime}`,
+        eventAt: new Date(),
+        metadata: {
+          pickupTime: payload.pickupTime
+        },
+        triageStatus: AlarmTriageStatus.OPEN
+      }
+    });
+  }
+
+  async recordReservationStatusUpdatedEvent(payload: {
+    tenantId: string;
+    reservationId: string;
+    previousStatus: string;
+    nextStatus: string;
+    reason?: string;
+  }): Promise<void> {
+    const severity = this.severityByReservationStatus(payload.nextStatus);
+
+    await this.prisma.operationalEvent.create({
+      data: {
+        tenantId: payload.tenantId,
+        reservationId: payload.reservationId,
+        eventType: OperationalEventType.RESERVATION_STATUS_UPDATED,
+        severity,
+        title: `Status ${payload.previousStatus} -> ${payload.nextStatus}`,
+        detail: payload.reason
+          ? `Reservation ${payload.reservationId} status degisti (${payload.reason})`
+          : `Reservation ${payload.reservationId} status degisti`,
+        eventAt: new Date(),
+        metadata: {
+          previousStatus: payload.previousStatus,
+          nextStatus: payload.nextStatus,
+          reason: payload.reason ?? null
+        },
+        triageStatus: severity === OperationalEventSeverity.HIGH ? AlarmTriageStatus.OPEN : AlarmTriageStatus.OPEN
+      }
+    });
+  }
+
   private buildDeliveryWhere(input: {
     tenantId: string;
     status?: string;
@@ -401,6 +657,63 @@ export class OperationsService {
     return where;
   }
 
+  private buildEventArchiveWhere(input: {
+    tenantId: string;
+    eventType?: string;
+    severity?: string;
+    triageStatus?: string;
+    reservationId?: string;
+    assignedUserId?: string;
+    from?: string;
+    to?: string;
+  }): Prisma.OperationalEventWhereInput {
+    const where: Prisma.OperationalEventWhereInput = {
+      tenantId: input.tenantId
+    };
+
+    if (input.eventType) {
+      where.eventType = this.parseEventType(input.eventType);
+    }
+
+    if (input.severity) {
+      where.severity = this.parseEventSeverity(input.severity);
+    }
+
+    if (input.triageStatus) {
+      where.triageStatus = this.parseTriageStatus(input.triageStatus);
+    }
+
+    if (input.reservationId) {
+      where.reservationId = input.reservationId;
+    }
+
+    if (input.assignedUserId) {
+      where.assignedUserId = input.assignedUserId;
+    }
+
+    if (input.from || input.to) {
+      where.eventAt = {};
+
+      if (input.from) {
+        const fromDate = new Date(input.from);
+        if (Number.isNaN(fromDate.getTime())) {
+          throw new BadRequestException("Invalid from date");
+        }
+        where.eventAt.gte = fromDate;
+      }
+
+      if (input.to) {
+        const toDate = new Date(input.to);
+        if (Number.isNaN(toDate.getTime())) {
+          throw new BadRequestException("Invalid to date");
+        }
+        where.eventAt.lte = toDate;
+      }
+    }
+
+    return where;
+  }
+
   private parseStatus(value: string): NotificationDeliveryStatus {
     const upper = value.toUpperCase();
     if (!Object.values(NotificationDeliveryStatus).includes(upper as NotificationDeliveryStatus)) {
@@ -425,6 +738,30 @@ export class OperationsService {
     return upper as NotificationErrorCategory;
   }
 
+  private parseEventType(value: string): OperationalEventType {
+    const upper = value.toUpperCase();
+    if (!Object.values(OperationalEventType).includes(upper as OperationalEventType)) {
+      throw new BadRequestException("Invalid eventType filter");
+    }
+    return upper as OperationalEventType;
+  }
+
+  private parseEventSeverity(value: string): OperationalEventSeverity {
+    const upper = value.toUpperCase();
+    if (!Object.values(OperationalEventSeverity).includes(upper as OperationalEventSeverity)) {
+      throw new BadRequestException("Invalid severity filter");
+    }
+    return upper as OperationalEventSeverity;
+  }
+
+  private parseTriageStatus(value: string): AlarmTriageStatus {
+    const upper = value.toUpperCase();
+    if (!Object.values(AlarmTriageStatus).includes(upper as AlarmTriageStatus)) {
+      throw new BadRequestException("Invalid triageStatus filter");
+    }
+    return upper as AlarmTriageStatus;
+  }
+
   private parseExportFormat(value?: string): "csv" | "json" {
     if (!value) {
       return "csv";
@@ -444,6 +781,77 @@ export class OperationsService {
     }
 
     return value as Record<string, unknown>;
+  }
+
+  private buildTriageUpdateData(
+    action: EventTriageAction,
+    userId: string,
+    input: EventTriageInput
+  ): Prisma.OperationalEventUncheckedUpdateInput {
+    if (action === "acknowledge") {
+      return {
+        triageStatus: AlarmTriageStatus.ACKNOWLEDGED,
+        acknowledgedAt: new Date(),
+        acknowledgedByUserId: userId,
+        snoozedUntil: null
+      };
+    }
+
+    if (action === "resolve") {
+      return {
+        triageStatus: AlarmTriageStatus.RESOLVED,
+        acknowledgedAt: new Date(),
+        acknowledgedByUserId: userId,
+        snoozedUntil: null
+      };
+    }
+
+    if (action === "assign") {
+      if (!input.assignedUserId) {
+        throw new BadRequestException("assignedUserId is required for assign action");
+      }
+
+      return {
+        triageStatus: AlarmTriageStatus.ACKNOWLEDGED,
+        assignedUserId: input.assignedUserId,
+        acknowledgedAt: new Date(),
+        acknowledgedByUserId: userId,
+        snoozedUntil: null
+      };
+    }
+
+    if (action === "snooze") {
+      if (!input.snoozedUntil) {
+        throw new BadRequestException("snoozedUntil is required for snooze action");
+      }
+
+      const snoozedUntil = new Date(input.snoozedUntil);
+      if (Number.isNaN(snoozedUntil.getTime())) {
+        throw new BadRequestException("Invalid snoozedUntil value");
+      }
+
+      return {
+        triageStatus: AlarmTriageStatus.SNOOZED,
+        snoozedUntil,
+        acknowledgedAt: new Date(),
+        acknowledgedByUserId: userId
+      };
+    }
+
+    throw new BadRequestException("Invalid triage action");
+  }
+
+  private severityByReservationStatus(status: string): OperationalEventSeverity {
+    const upper = status.toUpperCase();
+    if (["FAILED", "CANCELLED", "NO_SHOW", "DELAYED"].includes(upper)) {
+      return OperationalEventSeverity.HIGH;
+    }
+
+    if (["DRIVER_EN_ROUTE", "CUSTOMER_PICKED_UP", "IN_PROGRESS"].includes(upper)) {
+      return OperationalEventSeverity.MEDIUM;
+    }
+
+    return OperationalEventSeverity.LOW;
   }
 
   private toCsv(items: DeliveryQueryResult["items"]): string {
@@ -474,6 +882,44 @@ export class OperationsService {
         item.queueJobName,
         item.createdAt,
         item.sentAt ?? ""
+      ];
+
+      return values.map((value) => this.escapeCsv(value)).join(",");
+    });
+
+    return [headers.join(","), ...lines].join("\n");
+  }
+
+  private toEventArchiveCsv(items: EventArchiveRow[]): string {
+    const headers = [
+      "id",
+      "reservationId",
+      "eventType",
+      "severity",
+      "title",
+      "detail",
+      "eventAt",
+      "triageStatus",
+      "acknowledgedAt",
+      "acknowledgedByUserId",
+      "snoozedUntil",
+      "assignedUserId"
+    ];
+
+    const lines = items.map((item) => {
+      const values = [
+        item.id,
+        item.reservationId ?? "",
+        item.eventType,
+        item.severity,
+        item.title,
+        item.detail,
+        item.eventAt,
+        item.triageStatus,
+        item.acknowledgedAt ?? "",
+        item.acknowledgedByUserId ?? "",
+        item.snoozedUntil ?? "",
+        item.assignedUserId ?? ""
       ];
 
       return values.map((value) => this.escapeCsv(value)).join(",");
@@ -515,6 +961,36 @@ export class OperationsService {
       queueJobName: row.queueJobName,
       createdAt: row.createdAt.toISOString(),
       sentAt: row.sentAt?.toISOString()
+    };
+  }
+
+  private mapEventArchiveRow(row: {
+    id: string;
+    reservationId: string | null;
+    eventType: OperationalEventType;
+    severity: OperationalEventSeverity;
+    title: string;
+    detail: string;
+    eventAt: Date;
+    triageStatus: AlarmTriageStatus;
+    acknowledgedAt: Date | null;
+    acknowledgedByUserId: string | null;
+    snoozedUntil: Date | null;
+    assignedUserId: string | null;
+  }): EventArchiveRow {
+    return {
+      id: row.id,
+      reservationId: row.reservationId ?? undefined,
+      eventType: row.eventType,
+      severity: row.severity,
+      title: row.title,
+      detail: row.detail,
+      eventAt: row.eventAt.toISOString(),
+      triageStatus: row.triageStatus,
+      acknowledgedAt: row.acknowledgedAt?.toISOString(),
+      acknowledgedByUserId: row.acknowledgedByUserId ?? undefined,
+      snoozedUntil: row.snoozedUntil?.toISOString(),
+      assignedUserId: row.assignedUserId ?? undefined
     };
   }
 }

@@ -4,6 +4,7 @@ import { getCurrentTenantId, getCurrentUserId } from "../../common/context/reque
 import { PrismaService } from "../../common/prisma/prisma.service";
 import { QueueService } from "../../common/queue/queue.service";
 import { RealtimeGateway } from "../../common/realtime/realtime.gateway";
+import { OperationsService } from "../operations/operations.service";
 import { CreateReservationDto } from "./dto/create-reservation.dto";
 import { ReservationStatus } from "./reservation.status";
 import { UpdateReservationStatusDto } from "./dto/update-reservation-status.dto";
@@ -69,7 +70,8 @@ export class ReservationService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly queueService: QueueService,
-    private readonly realtimeGateway: RealtimeGateway
+    private readonly realtimeGateway: RealtimeGateway,
+    private readonly operationsService: OperationsService
   ) {}
 
   async list(): Promise<ReservationEntity[]> {
@@ -124,6 +126,12 @@ export class ReservationService {
     });
 
     this.realtimeGateway.emitReservationCreated({
+      tenantId,
+      reservationId: reservation.id,
+      pickupTime: reservation.pickupTime.toISOString()
+    });
+
+    await this.operationsService.recordReservationCreatedEvent({
       tenantId,
       reservationId: reservation.id,
       pickupTime: reservation.pickupTime.toISOString()
@@ -230,6 +238,14 @@ export class ReservationService {
     });
 
     this.realtimeGateway.emitReservationStatusUpdated({
+      tenantId,
+      reservationId: updated.id,
+      previousStatus,
+      nextStatus,
+      reason: dto.reason
+    });
+
+    await this.operationsService.recordReservationStatusUpdatedEvent({
       tenantId,
       reservationId: updated.id,
       previousStatus,

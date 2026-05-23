@@ -3,6 +3,9 @@ import { Socket, io } from "socket.io-client";
 import {
   DashboardResponse,
   DeadLetterRetryResponse,
+  EventArchiveResponse,
+  EventArchiveRow,
+  EventTriageResponse,
   DeliveryResponse,
   DeliveryRow
 } from "./types";
@@ -27,6 +30,11 @@ type RealtimeEvent = {
 type EventSeverity = "high" | "medium" | "low";
 
 type EventTypeFilter = "ALL" | "reservation.created" | "reservation.status.updated";
+
+type ArchiveSeverityFilter = "ALL" | "LOW" | "MEDIUM" | "HIGH";
+type ArchiveTriageFilter = "ALL" | "OPEN" | "ACKNOWLEDGED" | "SNOOZED" | "RESOLVED";
+type ArchiveEventTypeFilter = "ALL" | "RESERVATION_CREATED" | "RESERVATION_STATUS_UPDATED";
+type TriageAction = "acknowledge" | "snooze" | "assign" | "resolve";
 
 type Toast = {
   id: string;
@@ -98,6 +106,8 @@ export function App(): React.JSX.Element {
   const [dashboard, setDashboard] = useState<DashboardResponse | null>(null);
   const [deliveries, setDeliveries] = useState<DeliveryResponse | null>(null);
   const [deadLetters, setDeadLetters] = useState<DeliveryResponse | null>(null);
+  const [eventArchive, setEventArchive] = useState<EventArchiveResponse | null>(null);
+  const [eventTriageResult, setEventTriageResult] = useState<EventTriageResponse | null>(null);
   const [retryResult, setRetryResult] = useState<DeadLetterRetryResponse | null>(null);
   const [status, setStatus] = useState<LoadState>("idle");
   const [message, setMessage] = useState<string>("Bağlantı bilgilerini girip verileri çekebilirsin.");
@@ -124,6 +134,16 @@ export function App(): React.JSX.Element {
   const [limit, setLimit] = useState<number>(25);
   const [errorCategory, setErrorCategory] = useState<string>("");
   const [dryRun, setDryRun] = useState<boolean>(true);
+  const [archiveSeverity, setArchiveSeverity] = useState<ArchiveSeverityFilter>("ALL");
+  const [archiveTriageStatus, setArchiveTriageStatus] = useState<ArchiveTriageFilter>("ALL");
+  const [archiveEventType, setArchiveEventType] = useState<ArchiveEventTypeFilter>("ALL");
+  const [archiveReservationFilter, setArchiveReservationFilter] = useState<string>("");
+  const [archiveFrom, setArchiveFrom] = useState<string>("");
+  const [archiveTo, setArchiveTo] = useState<string>("");
+  const [selectedArchiveEventIds, setSelectedArchiveEventIds] = useState<string[]>([]);
+  const [triageAction, setTriageAction] = useState<TriageAction>("acknowledge");
+  const [triageAssignedUserId, setTriageAssignedUserId] = useState<string>("");
+  const [triageSnoozedUntil, setTriageSnoozedUntil] = useState<string>("");
   const socketRef = useRef<Socket | null>(null);
   const refreshTimerRef = useRef<number | null>(null);
   const toastTimerRef = useRef<number | null>(null);
@@ -158,6 +178,35 @@ export function App(): React.JSX.Element {
     lastSubscribedReservationId,
     onlySubscribedReservationEvents
   ]);
+
+  const priorityQueue = useMemo(() => {
+    const items = eventArchive?.items ?? [];
+    const triageScore: Record<EventArchiveRow["triageStatus"], number> = {
+      OPEN: 0,
+      ACKNOWLEDGED: 1,
+      SNOOZED: 2,
+      RESOLVED: 3
+    };
+    const severityScore: Record<EventArchiveRow["severity"], number> = {
+      HIGH: 3,
+      MEDIUM: 2,
+      LOW: 1
+    };
+
+    return [...items].sort((a, b) => {
+      const triageDiff = triageScore[a.triageStatus] - triageScore[b.triageStatus];
+      if (triageDiff !== 0) {
+        return triageDiff;
+      }
+
+      const severityDiff = severityScore[b.severity] - severityScore[a.severity];
+      if (severityDiff !== 0) {
+        return severityDiff;
+      }
+
+      return new Date(b.eventAt).getTime() - new Date(a.eventAt).getTime();
+    });
+  }, [eventArchive]);
 
   function getEventSeverity(event: RealtimeEvent): EventSeverity {
     const detail = event.detail.toUpperCase();
@@ -297,7 +346,7 @@ export function App(): React.JSX.Element {
     }
 
     try {
-      const [dashboardData, deliveryData, deadLetterData] = await Promise.all([
+      const [dashboardData, deliveryData, deadLetterData, archiveData] = await Promise.all([
         fetchJson<DashboardResponse>("/operations/live-dashboard"),
         fetchJson<DeliveryResponse>(
           `/operations/notification-deliveries?limit=${limit}&offset=0${
@@ -308,12 +357,17 @@ export function App(): React.JSX.Element {
           `/operations/notification-dead-letter?limit=${limit}&offset=0${
             errorCategory ? `&errorCategory=${encodeURIComponent(errorCategory)}` : ""
           }`
-        )
+        ),
+        fetchJson<EventArchiveResponse>(buildEventArchiveQuery())
       ]);
+
+      const archiveIds = new Set(archiveData.items.map((item) => item.id));
+      setSelectedArchiveEventIds((prev) => prev.filter((id) => archiveIds.has(id)));
 
       setDashboard(dashboardData);
       setDeliveries(deliveryData);
       setDeadLetters(deadLetterData);
+      setEventArchive(archiveData);
       setStatus("success");
       if (!options?.silent) {
         setMessage("Veriler başarıyla güncellendi.");
@@ -471,7 +525,6 @@ export function App(): React.JSX.Element {
     const payload = {
       exportedAt: new Date().toISOString(),
       filteredBy: {
-        eventType: eventTypeFilter,
         reservationSearch: eventReservationFilter,
         from: eventFrom || null,
         to: eventTo || null,
@@ -512,6 +565,137 @@ export function App(): React.JSX.Element {
       setMessage(`${format.toUpperCase()} dışa aktarımı indirildi.`);
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "Export hatası");
+    }
+  }
+
+  function buildEventArchiveQuery(): string {
+    const params = new URLSearchParams({
+      limit: String(limit),
+      offset: "0"
+    });
+
+    if (archiveSeverity !== "ALL") {
+      params.set("severity", archiveSeverity);
+    }
+
+    if (archiveTriageStatus !== "ALL") {
+      params.set("triageStatus", archiveTriageStatus);
+    }
+
+    if (archiveEventType !== "ALL") {
+      params.set("eventType", archiveEventType);
+    }
+
+    if (archiveReservationFilter.trim()) {
+      params.set("reservationId", archiveReservationFilter.trim());
+    }
+
+    if (archiveFrom) {
+      params.set("from", archiveFrom);
+    }
+
+    if (archiveTo) {
+      params.set("to", archiveTo);
+    }
+
+    return `/operations/event-archive?${params.toString()}`;
+  }
+
+  function buildEventArchiveExportPath(format: "csv" | "json"): string {
+    const query = buildEventArchiveQuery().replace("/operations/event-archive?", "");
+    return `/operations/event-archive/export?format=${format}&${query}`;
+  }
+
+  async function handleEventArchiveExport(format: "csv" | "json"): Promise<void> {
+    if (!canFetch) {
+      setMessage("Önce kimlik alanlarını doldur.");
+      return;
+    }
+
+    try {
+      const path = buildEventArchiveExportPath(format);
+      const response = await fetch(`${credentials.apiBaseUrl}${path}`, {
+        headers: buildHeaders(credentials)
+      });
+
+      if (!response.ok) {
+        throw new Error(await response.text());
+      }
+
+      const content = await response.text();
+      const ext = format === "csv" ? "csv" : "json";
+      downloadBlob(content, format === "csv" ? "text/csv" : "application/json", `event-archive-export.${ext}`);
+      setMessage(`Event archive ${format.toUpperCase()} dışa aktarımı indirildi.`);
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Archive export hatası");
+    }
+  }
+
+  function toggleArchiveSelection(eventId: string): void {
+    setSelectedArchiveEventIds((prev) => {
+      if (prev.includes(eventId)) {
+        return prev.filter((id) => id !== eventId);
+      }
+
+      return [...prev, eventId];
+    });
+  }
+
+  function toggleSelectAllArchiveRows(): void {
+    const ids = priorityQueue.map((row) => row.id);
+    if (ids.length === 0) {
+      return;
+    }
+
+    const allSelected = ids.every((id) => selectedArchiveEventIds.includes(id));
+    if (allSelected) {
+      setSelectedArchiveEventIds((prev) => prev.filter((id) => !ids.includes(id)));
+      return;
+    }
+
+    setSelectedArchiveEventIds(Array.from(new Set([...selectedArchiveEventIds, ...ids])));
+  }
+
+  async function runEventTriage(): Promise<void> {
+    if (!canFetch) {
+      setMessage("Önce kimlik alanlarını doldur.");
+      return;
+    }
+
+    if (selectedArchiveEventIds.length === 0) {
+      setMessage("Triage icin en az bir archive event sec.");
+      return;
+    }
+
+    try {
+      const payload: {
+        eventIds: string[];
+        action: TriageAction;
+        snoozedUntil?: string;
+        assignedUserId?: string;
+      } = {
+        eventIds: selectedArchiveEventIds,
+        action: triageAction
+      };
+
+      if (triageAction === "assign") {
+        payload.assignedUserId = triageAssignedUserId.trim() || undefined;
+      }
+
+      if (triageAction === "snooze") {
+        payload.snoozedUntil = triageSnoozedUntil || undefined;
+      }
+
+      const result = await fetchJson<EventTriageResponse>("/operations/event-archive/triage", {
+        method: "POST",
+        body: JSON.stringify(payload)
+      });
+
+      setEventTriageResult(result);
+      setMessage(`Triage: ${result.action} tamamlandi. Guncellenen kayit: ${result.updated}`);
+      await loadDashboard({ silent: true });
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Event triage hatası");
     }
   }
 
@@ -578,6 +762,34 @@ export function App(): React.JSX.Element {
         <td>{toLocalDate(row.createdAt)}</td>
       </tr>
     );
+  }
+
+  function archiveSeverityClass(severity: EventArchiveRow["severity"]): string {
+    if (severity === "HIGH") {
+      return "chip-high";
+    }
+
+    if (severity === "MEDIUM") {
+      return "chip-medium";
+    }
+
+    return "chip-low";
+  }
+
+  function triageClass(statusValue: EventArchiveRow["triageStatus"]): string {
+    if (statusValue === "OPEN") {
+      return "chip-open";
+    }
+
+    if (statusValue === "ACKNOWLEDGED") {
+      return "chip-ack";
+    }
+
+    if (statusValue === "SNOOZED") {
+      return "chip-snoozed";
+    }
+
+    return "chip-resolved";
   }
 
   return (
@@ -661,6 +873,58 @@ export function App(): React.JSX.Element {
             </label>
           </div>
 
+          <div className="archive-filter-row">
+            <label>
+              Archive Severity
+              <select value={archiveSeverity} onChange={(event) => setArchiveSeverity(event.target.value as ArchiveSeverityFilter)}>
+                <option value="ALL">ALL</option>
+                <option value="HIGH">HIGH</option>
+                <option value="MEDIUM">MEDIUM</option>
+                <option value="LOW">LOW</option>
+              </select>
+            </label>
+            <label>
+              Archive Triage
+              <select
+                value={archiveTriageStatus}
+                onChange={(event) => setArchiveTriageStatus(event.target.value as ArchiveTriageFilter)}
+              >
+                <option value="ALL">ALL</option>
+                <option value="OPEN">OPEN</option>
+                <option value="ACKNOWLEDGED">ACKNOWLEDGED</option>
+                <option value="SNOOZED">SNOOZED</option>
+                <option value="RESOLVED">RESOLVED</option>
+              </select>
+            </label>
+            <label>
+              Archive Event Type
+              <select
+                value={archiveEventType}
+                onChange={(event) => setArchiveEventType(event.target.value as ArchiveEventTypeFilter)}
+              >
+                <option value="ALL">ALL</option>
+                <option value="RESERVATION_CREATED">RESERVATION_CREATED</option>
+                <option value="RESERVATION_STATUS_UPDATED">RESERVATION_STATUS_UPDATED</option>
+              </select>
+            </label>
+            <label>
+              Archive Reservation ID
+              <input
+                value={archiveReservationFilter}
+                onChange={(event) => setArchiveReservationFilter(event.target.value)}
+                placeholder="Reservation UUID"
+              />
+            </label>
+            <label>
+              Archive From
+              <input type="datetime-local" value={archiveFrom} onChange={(event) => setArchiveFrom(event.target.value)} />
+            </label>
+            <label>
+              Archive To
+              <input type="datetime-local" value={archiveTo} onChange={(event) => setArchiveTo(event.target.value)} />
+            </label>
+          </div>
+
           <div className="actions-row">
             <button type="submit" className="btn btn-primary" disabled={status === "loading"}>
               {status === "loading" ? "Yukleniyor..." : "Dashboard Yenile"}
@@ -670,6 +934,12 @@ export function App(): React.JSX.Element {
             </button>
             <button type="button" className="btn" onClick={() => void handleExport("json")}>
               JSON Export
+            </button>
+            <button type="button" className="btn" onClick={() => void handleEventArchiveExport("csv")}>
+              Archive CSV Export
+            </button>
+            <button type="button" className="btn" onClick={() => void handleEventArchiveExport("json")}>
+              Archive JSON Export
             </button>
             <button type="button" className="btn btn-warn" onClick={() => void runDeadLetterRetry()}>
               {dryRun ? "Dry-Run Retry" : "Retry Calistir"}
@@ -867,6 +1137,99 @@ export function App(): React.JSX.Element {
             <p>Enqueued: {retryResult?.enqueued ?? "-"}</p>
             <p>Skipped Permanent: {retryResult?.skippedPermanent ?? "-"}</p>
             <p>Duplicate Groups: {retryResult?.duplicateGroups ?? "-"}</p>
+          </div>
+        </article>
+
+        <article className="panel table-panel">
+          <h3>Event Archive Priority Queue</h3>
+
+          <div className="triage-controls">
+            <button type="button" className="btn" onClick={toggleSelectAllArchiveRows}>
+              {priorityQueue.length > 0 && priorityQueue.every((row) => selectedArchiveEventIds.includes(row.id))
+                ? "Tumunu Kaldir"
+                : "Tumunu Sec"}
+            </button>
+            <label>
+              Action
+              <select value={triageAction} onChange={(event) => setTriageAction(event.target.value as TriageAction)}>
+                <option value="acknowledge">acknowledge</option>
+                <option value="snooze">snooze</option>
+                <option value="assign">assign</option>
+                <option value="resolve">resolve</option>
+              </select>
+            </label>
+            {triageAction === "assign" ? (
+              <label>
+                Assigned User ID
+                <input
+                  value={triageAssignedUserId}
+                  onChange={(event) => setTriageAssignedUserId(event.target.value)}
+                  placeholder="User UUID"
+                />
+              </label>
+            ) : null}
+            {triageAction === "snooze" ? (
+              <label>
+                Snoozed Until
+                <input
+                  type="datetime-local"
+                  value={triageSnoozedUntil}
+                  onChange={(event) => setTriageSnoozedUntil(event.target.value)}
+                />
+              </label>
+            ) : null}
+            <button type="button" className="btn btn-primary" onClick={() => void runEventTriage()}>
+              Triage Uygula ({selectedArchiveEventIds.length})
+            </button>
+          </div>
+
+          <table>
+            <thead>
+              <tr>
+                <th>Select</th>
+                <th>Severity</th>
+                <th>Triage</th>
+                <th>Event</th>
+                <th>Reservation</th>
+                <th>Assigned</th>
+                <th>Event At</th>
+              </tr>
+            </thead>
+            <tbody>
+              {priorityQueue.map((row) => (
+                <tr key={row.id}>
+                  <td>
+                    <input
+                      type="checkbox"
+                      checked={selectedArchiveEventIds.includes(row.id)}
+                      onChange={() => toggleArchiveSelection(row.id)}
+                    />
+                  </td>
+                  <td>
+                    <span className={`chip ${archiveSeverityClass(row.severity)}`}>{row.severity}</span>
+                  </td>
+                  <td>
+                    <span className={`chip ${triageClass(row.triageStatus)}`}>{row.triageStatus}</span>
+                  </td>
+                  <td>
+                    <div className="archive-title">{row.title}</div>
+                    <div className="archive-detail">{row.detail}</div>
+                  </td>
+                  <td>{row.reservationId ? row.reservationId.slice(0, 8) : "-"}</td>
+                  <td>{row.assignedUserId ? row.assignedUserId.slice(0, 8) : "-"}</td>
+                  <td>{toLocalDate(row.eventAt)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+
+          <div className="retry-summary">
+            <h4>Archive / Triage Ozet</h4>
+            <p>Total Archive Rows: {eventArchive?.total ?? "-"}</p>
+            <p>Queue Rows (filtered): {priorityQueue.length}</p>
+            <p>Triage Action: {eventTriageResult?.action ?? "-"}</p>
+            <p>Matched: {eventTriageResult?.matched ?? "-"}</p>
+            <p>Updated: {eventTriageResult?.updated ?? "-"}</p>
           </div>
         </article>
       </section>

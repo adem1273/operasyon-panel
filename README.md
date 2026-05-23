@@ -47,6 +47,10 @@ Enterprise AI-powered multi-tenant SaaS platform for VIP transportation operatio
 
    npm run test:integration:api
 
+11. Run observability stack (Prometheus + Grafana):
+
+   docker compose up -d prometheus grafana
+
 ## Demo Authentication Flow
 
 1. Login with tenant header:
@@ -139,6 +143,19 @@ Enterprise AI-powered multi-tenant SaaS platform for VIP transportation operatio
 Namespace:
 
 - /ws/operations
+
+## Metrics And Dashboards
+
+- Prometheus metrics endpoint (public):
+   - GET /metrics
+- Operations JSON metrics endpoint (authorized):
+   - GET /operations/metrics
+- Prometheus UI:
+   - http://localhost:9090
+- Grafana UI:
+   - http://localhost:3001 (admin/admin)
+- Provisioned dashboard:
+   - VIPFlow Operations Metrics
 
 Handshake requirements:
 

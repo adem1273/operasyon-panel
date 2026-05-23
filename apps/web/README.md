@@ -38,6 +38,7 @@ Web uygulamasi React + Vite ile calisir bir operasyon paneli olarak baslatildi.
 - Priority queue + bulk triage: acknowledge, snooze, assign, resolve
 - Quick OPEN filter, satir-ici triage aksiyonlari ve optimistic UI guncelleme
 - Operational metrics gorunumu (archive query/triage latency ve action count)
+- Cursor tabanli archive sayfalama (Load more) ve next cursor gorunumu
 
 ## Zorunlu Giris Bilgileri
 

@@ -650,6 +650,36 @@ export class OperationsService {
     };
   }
 
+  getPrometheusMetrics(): string {
+    const snapshot = this.getMetrics();
+
+    const lines = [
+      "# HELP vipflow_operations_event_archive_queries_total Total event archive query count",
+      "# TYPE vipflow_operations_event_archive_queries_total counter",
+      `vipflow_operations_event_archive_queries_total ${snapshot.eventArchiveQueryCount}`,
+      "# HELP vipflow_operations_event_archive_query_latency_avg_ms Average event archive query latency in milliseconds",
+      "# TYPE vipflow_operations_event_archive_query_latency_avg_ms gauge",
+      `vipflow_operations_event_archive_query_latency_avg_ms ${snapshot.eventArchiveQueryLatencyMsAvg}`,
+      "# HELP vipflow_operations_triage_actions_total Total triage action count",
+      "# TYPE vipflow_operations_triage_actions_total counter",
+      `vipflow_operations_triage_actions_total ${snapshot.triageActionCount}`,
+      "# HELP vipflow_operations_triage_action_latency_avg_ms Average triage action latency in milliseconds",
+      "# TYPE vipflow_operations_triage_action_latency_avg_ms gauge",
+      `vipflow_operations_triage_action_latency_avg_ms ${snapshot.triageActionLatencyMsAvg}`,
+      "# HELP vipflow_operations_triage_failures_total Total triage failures",
+      "# TYPE vipflow_operations_triage_failures_total counter",
+      `vipflow_operations_triage_failures_total ${snapshot.triageFailureCount}`,
+      "# HELP vipflow_operations_triage_action_breakdown_total Triage action breakdown",
+      "# TYPE vipflow_operations_triage_action_breakdown_total counter",
+      `vipflow_operations_triage_action_breakdown_total{action="acknowledge"} ${snapshot.triageActionBreakdown.acknowledge}`,
+      `vipflow_operations_triage_action_breakdown_total{action="snooze"} ${snapshot.triageActionBreakdown.snooze}`,
+      `vipflow_operations_triage_action_breakdown_total{action="assign"} ${snapshot.triageActionBreakdown.assign}`,
+      `vipflow_operations_triage_action_breakdown_total{action="resolve"} ${snapshot.triageActionBreakdown.resolve}`
+    ];
+
+    return `${lines.join("\n")}\n`;
+  }
+
   async recordReservationCreatedEvent(payload: {
     tenantId: string;
     reservationId: string;
